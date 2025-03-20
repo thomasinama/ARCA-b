@@ -7,9 +7,20 @@ import (
     "net/http"
     "os"
     "strings"
+    "sync"
 
+    "github.com/google/uuid"
     "github.com/sashabaranov/go-openai"
     "context"
+)
+
+type Session struct {
+    History []openai.ChatCompletionMessage
+}
+
+var (
+    sessions = make(map[string]*Session)
+    mutex    = &sync.Mutex{}
 )
 
 func main() {
@@ -63,6 +74,17 @@ func main() {
 
     // Serve la pagina HTML
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        // Imposta un cookie per identificare la sessione
+        sessionID, err := r.Cookie("session_id")
+        if err != nil || sessionID == nil {
+            sessionID = &http.Cookie{
+                Name:  "session_id",
+                Value: uuid.New().String(),
+                Path:  "/",
+            }
+            http.SetCookie(w, sessionID)
+        }
+
         w.Header().Set("Content-Type", "text/html")
         fmt.Fprintf(w, `
 <!DOCTYPE html>
@@ -99,7 +121,9 @@ func main() {
             addMessage("Tu: " + question, true);
             input.value = "";
 
-            const response = await fetch("/ask?question=" + encodeURIComponent(question));
+            const response = await fetch("/ask?question=" + encodeURIComponent(question), {
+                credentials: "include"
+            });
             const answer = await response.json();
             addMessage("ARCA-b: " + answer, false);
         }
@@ -115,20 +139,40 @@ func main() {
 
     // Endpoint /ask
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
+        // Recupera il sessionID dal cookie
+        sessionID, err := r.Cookie("session_id")
+        if err != nil {
+            http.Error(w, "Errore: sessione non trovata", http.StatusBadRequest)
+            return
+        }
+
         question := r.URL.Query().Get("question")
         if question == "" {
             http.Error(w, "Errore: specifica una domanda con ?question=", http.StatusBadRequest)
             return
         }
 
+        // Recupera o crea la sessione
+        mutex.Lock()
+        session, exists := sessions[sessionID.Value]
+        if !exists {
+            session = &Session{History: []openai.ChatCompletionMessage{}}
+            sessions[sessionID.Value] = session
+        }
+        mutex.Unlock()
+
+        // Aggiungi la domanda allo storico
+        session.History = append(session.History, openai.ChatCompletionMessage{
+            Role:    openai.ChatMessageRoleUser,
+            Content: question,
+        })
+
         // 1. OpenAI
         openAIResp, err := openAIClient.CreateChatCompletion(
             context.Background(),
             openai.ChatCompletionRequest{
-                Model: openai.GPT3Dot5Turbo,
-                Messages: []openai.ChatCompletionMessage{
-                    {Role: openai.ChatMessageRoleUser, Content: question},
-                },
+                Model:    openai.GPT3Dot5Turbo,
+                Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: question}},
             },
         )
         if err != nil {
@@ -173,8 +217,12 @@ func main() {
         }
         geminiAnswer := geminiResult.Candidates[0].Content.Parts[0].Text
 
-        // 4. Rielabora con OpenAI
-        prompt := fmt.Sprintf("Rispondi alla domanda '%s' in stile Grok. Tutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole.", question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+        // 4. Rielabora con OpenAI, includendo lo storico
+        historyPrompt := "Storico della conversazione:\n"
+        for _, msg := range session.History {
+            historyPrompt += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+        }
+        prompt := fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
         finalResp, err := openAIClient.CreateChatCompletion(
             context.Background(),
             openai.ChatCompletionRequest{
@@ -190,9 +238,17 @@ func main() {
         }
         finalAnswer := finalResp.Choices[0].Message.Content
 
+        // Aggiungi la risposta allo storico
+        mutex.Lock()
+        session.History = append(session.History, openai.ChatCompletionMessage{
+            Role:    openai.ChatMessageRoleAssistant,
+            Content: finalAnswer,
+        })
+        mutex.Unlock()
+
         json.NewEncoder(w).Encode(finalAnswer)
     })
 
-    fmt.Println("Server in ascolto su :8080...")
-    http.ListenAndServe(":8080", nil)
+    fmt.Println("Server in ascolto su :10000...")
+    http.ListenAndServe(":10000", nil)
 }
