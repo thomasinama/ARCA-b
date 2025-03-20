@@ -36,10 +36,21 @@ func main() {
 
     openAIClient := openai.NewClient(openAIKey)
 
-    getDeepSeekResponse := func(message string) (string, error) {
-        req, _ := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(
-            fmt.Sprintf(`{"model":"deepseek-chat","messages":[{"role":"user","content":"%s"}]}`, message),
-        ))
+    getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
+        // Converti lo storico in formato DeepSeek
+        var deepSeekMessages []map[string]string
+        for _, msg := range messages {
+            deepSeekMessages = append(deepSeekMessages, map[string]string{
+                "role":    msg.Role,
+                "content": msg.Content,
+            })
+        }
+
+        body, _ := json.Marshal(map[string]interface{}{
+            "model":    "deepseek-chat",
+            "messages": deepSeekMessages,
+        })
+        req, _ := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(string(body)))
         req.Header.Set("Authorization", "Bearer "+deepSeekKey)
         req.Header.Set("Content-Type", "application/json")
         resp, err := http.DefaultClient.Do(req)
@@ -48,12 +59,12 @@ func main() {
         }
         defer resp.Body.Close()
 
-        body, err := io.ReadAll(resp.Body)
+        bodyResp, err := io.ReadAll(resp.Body)
         if err != nil {
             return "", fmt.Errorf("errore nella lettura della risposta: %v", err)
         }
         if resp.StatusCode != http.StatusOK {
-            return "", fmt.Errorf("risposta non valida da DeepSeek (status %d): %s", resp.StatusCode, string(body))
+            return "", fmt.Errorf("risposta non valida da DeepSeek (status %d): %s", resp.StatusCode, string(bodyResp))
         }
 
         var result struct {
@@ -63,13 +74,13 @@ func main() {
                 } `json:"message"`
             } `json:"choices"`
         }
-        if err := json.Unmarshal(body, &result); err != nil {
-            return "", fmt.Errorf("errore nel parsing JSON: %v, risposta grezza: %s", err, string(body))
+        if err := json.Unmarshal(bodyResp, &result); err != nil {
+            return "", fmt.Errorf("errore nel parsing JSON: %v, risposta grezza: %s", err, string(bodyResp))
         }
         if len(result.Choices) > 0 {
             return result.Choices[0].Message.Content, nil
         }
-        return "", fmt.Errorf("nessuna risposta valida da DeepSeek: %s", string(body))
+        return "", fmt.Errorf("nessuna risposta valida da DeepSeek: %s", string(bodyResp))
     }
 
     // Serve la pagina HTML
@@ -103,6 +114,7 @@ func main() {
     <div id="chat"></div>
     <input id="input" type="text" placeholder="Scrivi la tua domanda...">
     <button onclick="sendMessage()">Invia</button>
+    <button onclick="clearChat()">Cancella Chat</button>
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
@@ -128,6 +140,15 @@ func main() {
             addMessage("ARCA-b: " + answer, false);
         }
 
+        function clearChat() {
+            fetch("/clear", {
+                method: "POST",
+                credentials: "include"
+            }).then(() => {
+                chat.innerHTML = "";
+            });
+        }
+
         input.addEventListener("keypress", function(e) {
             if (e.key === "Enter") sendMessage();
         });
@@ -135,6 +156,26 @@ func main() {
 </body>
 </html>
 `)
+    })
+
+    // Endpoint per cancellare la chat
+    http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "Metodo non consentito", http.StatusMethodNotAllowed)
+            return
+        }
+
+        sessionID, err := r.Cookie("session_id")
+        if err != nil {
+            http.Error(w, "Errore: sessione non trovata", http.StatusBadRequest)
+            return
+        }
+
+        mutex.Lock()
+        delete(sessions, sessionID.Value)
+        mutex.Unlock()
+
+        w.WriteHeader(http.StatusOK)
     })
 
     // Endpoint /ask
@@ -172,7 +213,7 @@ func main() {
             context.Background(),
             openai.ChatCompletionRequest{
                 Model:    openai.GPT3Dot5Turbo,
-                Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: question}},
+                Messages: session.History,
             },
         )
         if err != nil {
@@ -182,15 +223,19 @@ func main() {
         openAIAnswer := openAIResp.Choices[0].Message.Content
 
         // 2. DeepSeek
-        deepSeekAnswer, err := getDeepSeekResponse(question)
+        deepSeekAnswer, err := getDeepSeekResponse(session.History)
         if err != nil {
             http.Error(w, "Errore con DeepSeek: "+err.Error(), http.StatusInternalServerError)
             return
         }
 
         // 3. Gemini
+        historyForGemini := ""
+        for _, msg := range session.History {
+            historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+        }
         geminiReq, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
-            strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, question)))
+            strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
         geminiReq.Header.Set("Content-Type", "application/json")
         geminiResp, err := http.DefaultClient.Do(geminiReq)
         if err != nil {
@@ -222,14 +267,12 @@ func main() {
         for _, msg := range session.History {
             historyPrompt += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
         }
-        prompt := fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+        prompt := fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
         finalResp, err := openAIClient.CreateChatCompletion(
             context.Background(),
             openai.ChatCompletionRequest{
-                Model: openai.GPT3Dot5Turbo,
-                Messages: []openai.ChatCompletionMessage{
-                    {Role: openai.ChatMessageRoleUser, Content: prompt},
-                },
+                Model:    openai.GPT3Dot5Turbo,
+                Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
             },
         )
         if err != nil {
