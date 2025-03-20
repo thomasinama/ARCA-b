@@ -1,4 +1,4 @@
-package main
+kpackage main
 
 import (
     "encoding/json"
@@ -103,26 +103,119 @@ func main() {
 <head>
     <title>ARCA-b Chat</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        #chat { border: 1px solid #ccc; padding: 10px; height: 400px; overflow-y: scroll; }
-        #input { width: 80%; padding: 5px; }
-        button { padding: 5px 10px; }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f0f2f5;
+            transition: background-color 0.3s, color 0.3s;
+        }
+        body.dark {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        #chat {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 400px;
+            overflow-y: scroll;
+            background-color: white;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            transition: background-color 0.3s;
+        }
+        body.dark #chat {
+            background-color: #2a2a2a;
+            border-color: #444;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+            max-width: 70%;
+            word-wrap: break-word;
+            opacity: 0;
+            animation: fadeIn 0.5s forwards;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .user {
+            background-color: #007bff;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        .bot {
+            background-color: #e9ecef;
+            color: black;
+            margin-right: auto;
+        }
+        body.dark .user {
+            background-color: #1e90ff;
+        }
+        body.dark .bot {
+            background-color: #444;
+            color: #e0e0e0;
+        }
+        #input {
+            width: 70%;
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            margin-right: 10px;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+        body.dark #input {
+            background-color: #333;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        button {
+            padding: 8px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        .input-container {
+            display: flex;
+            align-items: center;
+        }
     </style>
 </head>
 <body>
     <h1>ARCA-b Chat</h1>
+    <button onclick="toggleTheme()">Cambia Tema</button>
     <div id="chat"></div>
-    <input id="input" type="text" placeholder="Scrivi la tua domanda...">
-    <button onclick="sendMessage()">Invia</button>
-    <button onclick="clearChat()">Cancella Chat</button>
+    <div class="input-container">
+        <input id="input" type="text" placeholder="Scrivi la tua domanda...">
+        <button onclick="sendMessage()">Invia</button>
+        <button onclick="clearChat()">Cancella Chat</button>
+    </div>
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
 
+        // Carica il tema salvato
+        if (localStorage.getItem("theme") === "dark") {
+            document.body.classList.add("dark");
+        }
+
+        function toggleTheme() {
+            document.body.classList.toggle("dark");
+            localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
+        }
+
         function addMessage(text, isUser) {
             const div = document.createElement("div");
             div.textContent = text;
-            div.style.color = isUser ? "blue" : "black";
+            div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
         }
@@ -209,6 +302,7 @@ func main() {
         })
 
         // 1. OpenAI
+        var openAIAnswer string
         openAIResp, err := openAIClient.CreateChatCompletion(
             context.Background(),
             openai.ChatCompletionRequest{
@@ -217,19 +311,20 @@ func main() {
             },
         )
         if err != nil {
-            http.Error(w, "Errore con OpenAI: "+err.Error(), http.StatusInternalServerError)
-            return
+            openAIAnswer = "Errore: OpenAI non ha risposto. Prova a riformulare la domanda o riprova più tardi."
+        } else {
+            openAIAnswer = openAIResp.Choices[0].Message.Content
         }
-        openAIAnswer := openAIResp.Choices[0].Message.Content
 
         // 2. DeepSeek
-        deepSeekAnswer, err := getDeepSeekResponse(session.History)
+        var deepSeekAnswer string
+        deepSeekAnswer, err = getDeepSeekResponse(session.History)
         if err != nil {
-            http.Error(w, "Errore con DeepSeek: "+err.Error(), http.StatusInternalServerError)
-            return
+            deepSeekAnswer = "Errore: DeepSeek non ha risposto. Prova a riformulare la domanda o riprova più tardi."
         }
 
         // 3. Gemini
+        var geminiAnswer string
         historyForGemini := ""
         for _, msg := range session.History {
             historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
@@ -239,28 +334,26 @@ func main() {
         geminiReq.Header.Set("Content-Type", "application/json")
         geminiResp, err := http.DefaultClient.Do(geminiReq)
         if err != nil {
-            http.Error(w, "Errore con Gemini: "+err.Error(), http.StatusInternalServerError)
-            return
+            geminiAnswer = "Errore: Gemini non ha risposto. Prova a riformulare la domanda o riprova più tardi."
+        } else {
+            defer geminiResp.Body.Close()
+            var geminiResult struct {
+                Candidates []struct {
+                    Content struct {
+                        Parts []struct {
+                            Text string `json:"text"`
+                        } `json:"parts"`
+                    } `json:"content"`
+                } `json:"candidates"`
+            }
+            if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
+                geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
+            } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
+                geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+            } else {
+                geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
+            }
         }
-        defer geminiResp.Body.Close()
-        var geminiResult struct {
-            Candidates []struct {
-                Content struct {
-                    Parts []struct {
-                        Text string `json:"text"`
-                    } `json:"parts"`
-                } `json:"content"`
-            } `json:"candidates"`
-        }
-        if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
-            http.Error(w, "Errore nel parsing di Gemini: "+err.Error(), http.StatusInternalServerError)
-            return
-        }
-        if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-            http.Error(w, "Nessuna risposta da Gemini", http.StatusInternalServerError)
-            return
-        }
-        geminiAnswer := geminiResult.Candidates[0].Content.Parts[0].Text
 
         // 4. Rielabora con OpenAI, includendo lo storico
         historyPrompt := "Storico della conversazione:\n"
