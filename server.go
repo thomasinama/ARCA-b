@@ -30,9 +30,28 @@ func main() {
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
     geminiKey := os.Getenv("GEMINI_API_KEY")
 
-    if openAIKey == "" || deepSeekKey == "" || geminiKey == "" {
-        fmt.Println("Errore: una o più chiavi API non sono impostate")
-        return
+    // Verifica le chiavi API senza bloccare il server
+    if openAIKey == "" {
+        fmt.Println("Errore: OPENAI_API_KEY non è impostata")
+    } else {
+        fmt.Println("OPENAI_API_KEY caricata correttamente")
+    }
+    if deepSeekKey == "" {
+        fmt.Println("Errore: DEEPSEEK_API_KEY non è impostata")
+    } else {
+        fmt.Println("DEEPSEEK_API_KEY caricata correttamente")
+    }
+    if geminiKey == "" {
+        fmt.Println("Errore: GEMINI_API_KEY non è impostata")
+    } else {
+        fmt.Println("GEMINI_API_KEY caricata correttamente")
+    }
+
+    // Carica la porta da usare
+    port := os.Getenv("PORT")
+    if port == "" {
+        fmt.Println("PORT non specificata, uso default :10000")
+        port = "10000" // Default per test locali
     }
 
     openAIClient := openai.NewClient(openAIKey)
@@ -43,6 +62,9 @@ func main() {
     }
 
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
+        if deepSeekKey == "" {
+            return "", fmt.Errorf("DEEPSEEK_API_KEY non è impostata")
+        }
         // Converti lo storico in formato DeepSeek
         var deepSeekMessages []map[string]string
         for _, msg := range messages {
@@ -360,8 +382,8 @@ func main() {
         }
         // Sanitizza l'input
         question = strings.TrimSpace(question)
-        question = strings.ReplaceAll(question, "<", "&lt;")
-        question = strings.ReplaceAll(question, ">", "&gt;")
+        question = strings.ReplaceAll(question, "<", "<")
+        question = strings.ReplaceAll(question, ">", ">")
 
         style := r.URL.Query().Get("style")
         if style == "" {
@@ -385,20 +407,24 @@ func main() {
 
         // 1. OpenAI
         var openAIAnswer string
-        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
-        openAIResp, err := openAIClient.CreateChatCompletion(
-            ctx,
-            openai.ChatCompletionRequest{
-                Model:    openai.GPT3Dot5Turbo,
-                Messages: session.History,
-            },
-        )
-        if err != nil {
-            fmt.Printf("Errore con OpenAI: %v\n", err)
-            openAIAnswer = "Errore: OpenAI non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
+        if openAIKey == "" {
+            openAIAnswer = "Errore: OPENAI_API_KEY non è impostata."
         } else {
-            openAIAnswer = openAIResp.Choices[0].Message.Content
+            ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+            defer cancel()
+            openAIResp, err := openAIClient.CreateChatCompletion(
+                ctx,
+                openai.ChatCompletionRequest{
+                    Model:    openai.GPT3Dot5Turbo,
+                    Messages: session.History,
+                },
+            )
+            if err != nil {
+                fmt.Printf("Errore con OpenAI: %v\n", err)
+                openAIAnswer = "Errore: OpenAI non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
+            } else {
+                openAIAnswer = openAIResp.Choices[0].Message.Content
+            }
         }
 
         // 2. DeepSeek
@@ -411,35 +437,39 @@ func main() {
 
         // 3. Gemini
         var geminiAnswer string
-        historyForGemini := ""
-        for _, msg := range session.History {
-            historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
-        }
-        geminiReq, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
-            strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
-        geminiReq.Header.Set("Content-Type", "application/json")
-        geminiResp, err := client.Do(geminiReq)
-        if err != nil {
-            fmt.Printf("Errore con Gemini: %v\n", err)
-            geminiAnswer = "Errore: Gemini non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
+        if geminiKey == "" {
+            geminiAnswer = "Errore: GEMINI_API_KEY non è impostata."
         } else {
-            defer geminiResp.Body.Close()
-            var geminiResult struct {
-                Candidates []struct {
-                    Content struct {
-                        Parts []struct {
-                            Text string `json:"text"`
-                        } `json:"parts"`
-                    } `json:"content"`
-                } `json:"candidates"`
+            historyForGemini := ""
+            for _, msg := range session.History {
+                historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
             }
-            if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
-                fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
-                geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
-            } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+            geminiReq, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
+                strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
+            geminiReq.Header.Set("Content-Type", "application/json")
+            geminiResp, err := client.Do(geminiReq)
+            if err != nil {
+                fmt.Printf("Errore con Gemini: %v\n", err)
+                geminiAnswer = "Errore: Gemini non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
             } else {
-                geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
+                defer geminiResp.Body.Close()
+                var geminiResult struct {
+                    Candidates []struct {
+                        Content struct {
+                            Parts []struct {
+                                Text string `json:"text"`
+                            } `json:"parts"`
+                        } `json:"content"`
+                    } `json:"candidates"`
+                }
+                if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
+                    fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
+                    geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
+                } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
+                    geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+                } else {
+                    geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
+                }
             }
         }
 
@@ -455,39 +485,43 @@ func main() {
             prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono professionale, diretto e analitico, senza lo stile Grok. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
         }
         var finalAnswer string
-        ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-        defer cancel()
-        finalResp, err := openAIClient.CreateChatCompletion(
-            ctx,
-            openai.ChatCompletionRequest{
-                Model:    openai.GPT3Dot5Turbo,
-                Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
-            },
-        )
-        if err != nil {
-            fmt.Printf("Errore nella rielaborazione con OpenAI: %v\n", err)
-            // Fallback: usa le risposte delle altre API
-            finalAnswer = "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\n"
-            if !strings.Contains(openAIAnswer, "Errore") {
-                finalAnswer += "OpenAI: " + openAIAnswer + "\n"
-            } else {
-                finalAnswer += "OpenAI: (non disponibile)\n"
-            }
-            if !strings.Contains(deepSeekAnswer, "Errore") {
-                finalAnswer += "DeepSeek: " + deepSeekAnswer + "\n"
-            } else {
-                finalAnswer += "DeepSeek: (non disponibile)\n"
-            }
-            if !strings.Contains(geminiAnswer, "Errore") {
-                finalAnswer += "Gemini: " + geminiAnswer + "\n"
-            } else {
-                finalAnswer += "Gemini: (non disponibile)\n"
-            }
-            if finalAnswer == "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\nOpenAI: (non disponibile)\nDeepSeek: (non disponibile)\nGemini: (non disponibile)\n" {
-                finalAnswer = "Errore: nessuna delle AI ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
-            }
+        if openAIKey == "" {
+            finalAnswer = "Errore: OPENAI_API_KEY non è impostata, non posso rielaborare le risposte."
         } else {
-            finalAnswer = finalResp.Choices[0].Message.Content
+            ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+            defer cancel()
+            finalResp, err := openAIClient.CreateChatCompletion(
+                ctx,
+                openai.ChatCompletionRequest{
+                    Model:    openai.GPT3Dot5Turbo,
+                    Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
+                },
+            )
+            if err != nil {
+                fmt.Printf("Errore nella rielaborazione con OpenAI: %v\n", err)
+                // Fallback: usa le risposte delle altre API
+                finalAnswer = "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\n"
+                if !strings.Contains(openAIAnswer, "Errore") {
+                    finalAnswer += "OpenAI: " + openAIAnswer + "\n"
+                } else {
+                    finalAnswer += "OpenAI: (non disponibile)\n"
+                }
+                if !strings.Contains(deepSeekAnswer, "Errore") {
+                    finalAnswer += "DeepSeek: " + deepSeekAnswer + "\n"
+                } else {
+                    finalAnswer += "DeepSeek: (non disponibile)\n"
+                }
+                if !strings.Contains(geminiAnswer, "Errore") {
+                    finalAnswer += "Gemini: " + geminiAnswer + "\n"
+                } else {
+                    finalAnswer += "Gemini: (non disponibile)\n"
+                }
+                if finalAnswer == "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\nOpenAI: (non disponibile)\nDeepSeek: (non disponibile)\nGemini: (non disponibile)\n" {
+                    finalAnswer = "Errore: nessuna delle AI ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
+                }
+            } else {
+                finalAnswer = finalResp.Choices[0].Message.Content
+            }
         }
 
         // Aggiungi la risposta allo storico
@@ -501,6 +535,9 @@ func main() {
         json.NewEncoder(w).Encode(finalAnswer)
     })
 
-    fmt.Println("Server in ascolto su :10000...")
-    http.ListenAndServe(":10000", nil)
+    fmt.Printf("Server in ascolto sulla porta %s...\n", port)
+    if err := http.ListenAndServe(":"+port, nil); err != nil {
+        fmt.Printf("Errore nell'avvio del server: %v\n", err)
+        os.Exit(1)
+    }
 }
