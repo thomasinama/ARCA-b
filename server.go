@@ -59,7 +59,7 @@ func main() {
 
     // Crea un client HTTP con timeout
     client := &http.Client{
-        Timeout: 10 * time.Second,
+        Timeout: 20 * time.Second, // Aumentato a 20 secondi
     }
 
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
@@ -75,16 +75,24 @@ func main() {
             })
         }
 
-        body, _ := json.Marshal(map[string]interface{}{
+        body, err := json.Marshal(map[string]interface{}{
             "model":    "deepseek-chat",
             "messages": deepSeekMessages,
         })
-        req, _ := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(string(body)))
+        if err != nil {
+            return "", fmt.Errorf("errore nella creazione del body JSON: %v", err)
+        }
+
+        req, err := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(string(body)))
+        if err != nil {
+            return "", fmt.Errorf("errore nella creazione della richiesta: %v", err)
+        }
         req.Header.Set("Authorization", "Bearer "+deepSeekKey)
         req.Header.Set("Content-Type", "application/json")
+
         resp, err := client.Do(req) // Usa il client con timeout
         if err != nil {
-            return "", err
+            return "", fmt.Errorf("errore nella richiesta a DeepSeek: %v", err)
         }
         defer resp.Body.Close()
 
@@ -471,8 +479,8 @@ func main() {
             defer cancel()
             openAIResp, err := openAIClient.CreateChatCompletion(
                 ctx,
-                openAI.ChatCompletionRequest{
-                    Model:    openAI.GPT3Dot5Turbo,
+                openai.ChatCompletionRequest{
+                    Model:    openai.GPT3Dot5Turbo,
                     Messages: session.History,
                 },
             )
@@ -501,31 +509,36 @@ func main() {
             for _, msg := range session.History {
                 historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
             }
-            geminiReq, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
+            geminiReq, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                 strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
-            geminiReq.Header.Set("Content-Type", "application/json")
-            geminiResp, err := client.Do(geminiReq)
             if err != nil {
-                fmt.Printf("Errore con Gemini: %v\n", err)
-                geminiAnswer = "Errore: Gemini non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
+                fmt.Printf("Errore nella creazione della richiesta a Gemini: %v\n", err)
+                geminiAnswer = "Errore: Gemini non ha risposto (errore nella richiesta). Prova a riformulare la domanda o riprova più tardi."
             } else {
-                defer geminiResp.Body.Close()
-                var geminiResult struct {
-                    Candidates []struct {
-                        Content struct {
-                            Parts []struct {
-                                Text string `json:"text"`
-                            } `json:"parts"`
-                        } `json:"content"`
-                    } `json:"candidates"`
-                }
-                if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
-                    fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
-                    geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
-                } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                    geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+                geminiReq.Header.Set("Content-Type", "application/json")
+                geminiResp, err := client.Do(geminiReq)
+                if err != nil {
+                    fmt.Printf("Errore con Gemini: %v\n", err)
+                    geminiAnswer = "Errore: Gemini non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
                 } else {
-                    geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
+                    defer geminiResp.Body.Close()
+                    var geminiResult struct {
+                        Candidates []struct {
+                            Content struct {
+                                Parts []struct {
+                                    Text string `json:"text"`
+                                } `json:"parts"`
+                            } `json:"content"`
+                        } `json:"candidates"`
+                    }
+                    if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
+                        fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
+                        geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
+                    } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
+                        geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+                    } else {
+                        geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
+                    }
                 }
             }
         }
@@ -550,7 +563,7 @@ func main() {
             finalResp, err := openAIClient.CreateChatCompletion(
                 ctx,
                 openai.ChatCompletionRequest{
-                    Model:    openAI.GPT3Dot5Turbo,
+                    Model:    openai.GPT3Dot5Turbo,
                     Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
                 },
             )
