@@ -1,6 +1,7 @@
-kpackage main
+package main
 
 import (
+    "context"
     "encoding/json"
     "fmt"
     "io"
@@ -8,10 +9,10 @@ import (
     "os"
     "strings"
     "sync"
+    "time"
 
     "github.com/google/uuid"
     "github.com/sashabaranov/go-openai"
-    "context"
 )
 
 type Session struct {
@@ -36,6 +37,11 @@ func main() {
 
     openAIClient := openai.NewClient(openAIKey)
 
+    // Crea un client HTTP con timeout
+    client := &http.Client{
+        Timeout: 10 * time.Second,
+    }
+
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
         // Converti lo storico in formato DeepSeek
         var deepSeekMessages []map[string]string
@@ -53,7 +59,7 @@ func main() {
         req, _ := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(string(body)))
         req.Header.Set("Authorization", "Bearer "+deepSeekKey)
         req.Header.Set("Content-Type", "application/json")
-        resp, err := http.DefaultClient.Do(req)
+        resp, err := client.Do(req) // Usa il client con timeout
         if err != nil {
             return "", err
         }
@@ -102,25 +108,40 @@ func main() {
 <html>
 <head>
     <title>ARCA-b Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 20px;
+            margin: 0;
+            padding: 10px;
             background-color: #f0f2f5;
             transition: background-color 0.3s, color 0.3s;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
         }
         body.dark {
             background-color: #1a1a1a;
             color: #e0e0e0;
         }
+        h1 {
+            font-size: 1.5em;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+        .button-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
         #chat {
             border: 1px solid #ccc;
             padding: 10px;
-            height: 400px;
-            overflow-y: scroll;
+            flex: 1;
+            overflow-y: auto;
             background-color: white;
             border-radius: 10px;
-            margin-bottom: 20px;
             transition: background-color 0.3s;
         }
         body.dark #chat {
@@ -131,7 +152,7 @@ func main() {
             margin: 10px 0;
             padding: 10px;
             border-radius: 10px;
-            max-width: 70%;
+            max-width: 80%;
             word-wrap: break-word;
             opacity: 0;
             animation: fadeIn 0.5s forwards;
@@ -158,12 +179,19 @@ func main() {
             background-color: #444;
             color: #e0e0e0;
         }
+        .input-container {
+            display: flex;
+            align-items: center;
+            margin-top: 10px;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
         #input {
-            width: 70%;
-            padding: 8px;
+            flex: 1;
+            padding: 10px;
             border: 1px solid #ccc;
             border-radius: 5px;
-            margin-right: 10px;
+            font-size: 1em;
             transition: background-color 0.3s, border-color 0.3s;
         }
         body.dark #input {
@@ -172,44 +200,89 @@ func main() {
             color: #e0e0e0;
         }
         button {
-            padding: 8px 15px;
+            padding: 10px 15px;
             background-color: #007bff;
             color: white;
             border: none;
             border-radius: 5px;
             cursor: pointer;
-            margin-right: 10px;
+            font-size: 1em;
         }
         button:hover {
             background-color: #0056b3;
         }
-        .input-container {
-            display: flex;
-            align-items: center;
+        body.dark button {
+            background-color: #1e90ff;
+        }
+        body.dark button:hover {
+            background-color: #0066cc;
+        }
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.2em;
+            }
+            #chat {
+                margin-top: 10px;
+            }
+            .input-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            #input {
+                width: 100%;
+                font-size: 0.9em;
+            }
+            button {
+                width: 100%;
+                padding: 12px;
+                font-size: 0.9em;
+            }
+            .button-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            .button-container button {
+                width: 100%;
+            }
         }
     </style>
 </head>
 <body>
     <h1>ARCA-b Chat</h1>
-    <button onclick="toggleTheme()">Cambia Tema</button>
-    <div id="chat"></div>
+    <div class="button-container">
+        <button onclick="toggleTheme()">Tema Scuro/Chiaro</button>
+        <button onclick="toggleStyle()">Inama Style</button>
+    </div>
     <div class="input-container">
         <input id="input" type="text" placeholder="Scrivi la tua domanda...">
         <button onclick="sendMessage()">Invia</button>
         <button onclick="clearChat()">Cancella Chat</button>
     </div>
+    <div id="chat"></div>
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
+        let useGrokStyle = true;
 
         // Carica il tema salvato
         if (localStorage.getItem("theme") === "dark") {
             document.body.classList.add("dark");
         }
 
+        // Carica lo stile salvato
+        if (localStorage.getItem("style") === "inama") {
+            useGrokStyle = false;
+        }
+
         function toggleTheme() {
             document.body.classList.toggle("dark");
             localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
+        }
+
+        function toggleStyle() {
+            useGrokStyle = !useGrokStyle;
+            localStorage.setItem("style", useGrokStyle ? "grok" : "inama");
+            alert("Stile cambiato: " + (useGrokStyle ? "Grok Style" : "Inama Style"));
         }
 
         function addMessage(text, isUser) {
@@ -226,7 +299,7 @@ func main() {
             addMessage("Tu: " + question, true);
             input.value = "";
 
-            const response = await fetch("/ask?question=" + encodeURIComponent(question), {
+            const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + (useGrokStyle ? "grok" : "inama"), {
                 credentials: "include"
             });
             const answer = await response.json();
@@ -285,6 +358,15 @@ func main() {
             http.Error(w, "Errore: specifica una domanda con ?question=", http.StatusBadRequest)
             return
         }
+        // Sanitizza l'input
+        question = strings.TrimSpace(question)
+        question = strings.ReplaceAll(question, "<", "&lt;")
+        question = strings.ReplaceAll(question, ">", "&gt;")
+
+        style := r.URL.Query().Get("style")
+        if style == "" {
+            style = "grok" // Default a Grok style
+        }
 
         // Recupera o crea la sessione
         mutex.Lock()
@@ -303,15 +385,18 @@ func main() {
 
         // 1. OpenAI
         var openAIAnswer string
+        ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
         openAIResp, err := openAIClient.CreateChatCompletion(
-            context.Background(),
+            ctx,
             openai.ChatCompletionRequest{
                 Model:    openai.GPT3Dot5Turbo,
                 Messages: session.History,
             },
         )
         if err != nil {
-            openAIAnswer = "Errore: OpenAI non ha risposto. Prova a riformulare la domanda o riprova più tardi."
+            fmt.Printf("Errore con OpenAI: %v\n", err)
+            openAIAnswer = "Errore: OpenAI non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
         } else {
             openAIAnswer = openAIResp.Choices[0].Message.Content
         }
@@ -320,7 +405,8 @@ func main() {
         var deepSeekAnswer string
         deepSeekAnswer, err = getDeepSeekResponse(session.History)
         if err != nil {
-            deepSeekAnswer = "Errore: DeepSeek non ha risposto. Prova a riformulare la domanda o riprova più tardi."
+            fmt.Printf("Errore con DeepSeek: %v\n", err)
+            deepSeekAnswer = "Errore: DeepSeek non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
         }
 
         // 3. Gemini
@@ -332,9 +418,10 @@ func main() {
         geminiReq, _ := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
             strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
         geminiReq.Header.Set("Content-Type", "application/json")
-        geminiResp, err := http.DefaultClient.Do(geminiReq)
+        geminiResp, err := client.Do(geminiReq)
         if err != nil {
-            geminiAnswer = "Errore: Gemini non ha risposto. Prova a riformulare la domanda o riprova più tardi."
+            fmt.Printf("Errore con Gemini: %v\n", err)
+            geminiAnswer = "Errore: Gemini non ha risposto (timeout o errore di rete). Prova a riformulare la domanda o riprova più tardi."
         } else {
             defer geminiResp.Body.Close()
             var geminiResult struct {
@@ -347,6 +434,7 @@ func main() {
                 } `json:"candidates"`
             }
             if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
+                fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
                 geminiAnswer = "Errore: Gemini non ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
             } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
                 geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
@@ -360,19 +448,47 @@ func main() {
         for _, msg := range session.History {
             historyPrompt += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
         }
-        prompt := fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+        var prompt string
+        if style == "grok" {
+            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole in stile Grok. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+        } else {
+            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono professionale, diretto e analitico, senza lo stile Grok. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+        }
+        var finalAnswer string
+        ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+        defer cancel()
         finalResp, err := openAIClient.CreateChatCompletion(
-            context.Background(),
+            ctx,
             openai.ChatCompletionRequest{
                 Model:    openai.GPT3Dot5Turbo,
                 Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
             },
         )
         if err != nil {
-            http.Error(w, "Errore nella rielaborazione con OpenAI: "+err.Error(), http.StatusInternalServerError)
-            return
+            fmt.Printf("Errore nella rielaborazione con OpenAI: %v\n", err)
+            // Fallback: usa le risposte delle altre API
+            finalAnswer = "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\n"
+            if !strings.Contains(openAIAnswer, "Errore") {
+                finalAnswer += "OpenAI: " + openAIAnswer + "\n"
+            } else {
+                finalAnswer += "OpenAI: (non disponibile)\n"
+            }
+            if !strings.Contains(deepSeekAnswer, "Errore") {
+                finalAnswer += "DeepSeek: " + deepSeekAnswer + "\n"
+            } else {
+                finalAnswer += "DeepSeek: (non disponibile)\n"
+            }
+            if !strings.Contains(geminiAnswer, "Errore") {
+                finalAnswer += "Gemini: " + geminiAnswer + "\n"
+            } else {
+                finalAnswer += "Gemini: (non disponibile)\n"
+            }
+            if finalAnswer == "Errore: non sono riuscito a rielaborare le risposte con OpenAI. Ecco una sintesi delle risposte disponibili:\nOpenAI: (non disponibile)\nDeepSeek: (non disponibile)\nGemini: (non disponibile)\n" {
+                finalAnswer = "Errore: nessuna delle AI ha risposto correttamente. Prova a riformulare la domanda o riprova più tardi."
+            }
+        } else {
+            finalAnswer = finalResp.Choices[0].Message.Content
         }
-        finalAnswer := finalResp.Choices[0].Message.Content
 
         // Aggiungi la risposta allo storico
         mutex.Lock()
