@@ -458,13 +458,15 @@ func main() {
             const typingIndicator = showTypingIndicator();
 
             try {
+                // Assicura che l'indicatore sia visibile per almeno 1 secondo
+                const minDisplayTime = new Promise(resolve => setTimeout(resolve, 1000));
                 const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style, {
                     credentials: "include"
                 });
-                const answer = await response.json();
+                const answer = await Promise.all([response.json(), minDisplayTime]);
                 // Rimuove l'indicatore "Sta scrivendo..." e mostra la risposta
                 removeTypingIndicator();
-                addMessage(answer, false, style);
+                addMessage(answer[0], false, style);
             } catch (error) {
                 // In caso di errore, rimuove l'indicatore e mostra un messaggio di errore
                 removeTypingIndicator();
