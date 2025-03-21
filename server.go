@@ -147,6 +147,14 @@ func main() {
 <html>
 <head>
     <title>ARCA-b Chat AI</title>
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-YOUR-MEASUREMENT-ID"></script>
+    <script>
+        window.dataLayer = window.dataLayer || [];
+        function gtag(){dataLayer.push(arguments);}
+        gtag('js', new Date());
+        gtag('config', 'G-YOUR-MEASUREMENT-ID');
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
@@ -174,33 +182,18 @@ func main() {
             gap: 10px;
             margin-bottom: 10px;
         }
-        .style-container {
-            display: flex;
-            justify-content: center;
-            gap: 10px;
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
             margin-bottom: 10px;
-        }
-        select {
-            padding: 8px;
-            border: 1px solid #ccc;
-            border-radius: 5px;
-            font-size: 1em;
-            background-color: white;
-            transition: background-color 0.3s, border-color 0.3s;
-        }
-        body.dark select {
-            background-color: #333;
-            border-color: #555;
-            color: #e0e0e0;
         }
         #chat {
             border: 1px solid #ccc;
             padding: 10px;
-            flex: 1;
-            overflow-y: auto;
             background-color: white;
             border-radius: 10px;
             transition: background-color 0.3s;
+            min-height: 200px;
         }
         body.dark #chat {
             background-color: #2a2a2a;
@@ -246,12 +239,42 @@ func main() {
         body.dark .style-label {
             color: #aaa;
         }
+        .input-and-style-container {
+            position: sticky;
+            bottom: 10px;
+            background-color: #f0f2f5;
+            padding: 10px 0;
+            z-index: 10;
+            transition: background-color 0.3s;
+        }
+        body.dark .input-and-style-container {
+            background-color: #1a1a1a;
+        }
+        .style-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        select {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1em;
+            background-color: white;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+        body.dark select {
+            background-color: #333;
+            border-color: #555;
+            color: #e0e0e0;
+        }
         .input-container {
             display: flex;
             align-items: center;
-            margin-top: 10px;
             gap: 10px;
             flex-wrap: wrap;
+            justify-content: center;
         }
         #input {
             flex: 1;
@@ -260,6 +283,7 @@ func main() {
             border-radius: 5px;
             font-size: 1em;
             transition: background-color 0.3s, border-color 0.3s;
+            min-width: 200px;
         }
         body.dark #input {
             background-color: #333;
@@ -284,12 +308,40 @@ func main() {
         body.dark button:hover {
             background-color: #0066cc;
         }
+        .typing {
+            font-style: italic;
+            color: #888;
+            background-color: #f0f0f0;
+            animation: pulse 1s infinite;
+        }
+        body.dark .typing {
+            background-color: #555;
+            color: #ccc;
+        }
+        @keyframes pulse {
+            0% { opacity: 0.6; }
+            50% { opacity: 1; }
+            100% { opacity: 0.6; }
+        }
         @media (max-width: 600px) {
             h1 {
                 font-size: 1.2em;
             }
+            #chat-container {
+                margin-bottom: 10px;
+            }
             #chat {
                 margin-top: 10px;
+            }
+            .input-and-style-container {
+                padding: 5px 0;
+            }
+            .style-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            select {
+                width: 100%;
             }
             .input-container {
                 flex-direction: column;
@@ -311,33 +363,33 @@ func main() {
             .button-container button {
                 width: 100%;
             }
-            .style-container {
-                flex-direction: column;
-                gap: 5px;
-            }
-            select {
-                width: 100%;
-            }
         }
     </style>
 </head>
 <body>
     <h1>ARCA-b Chat AI</h1>
+    <p style="text-align: center; font-size: 0.9em; color: #666;">
+        Nota: Le conversazioni vengono salvate temporaneamente per migliorare l'esperienza. Non inserire informazioni personali o sensibili.
+    </p>
     <div class="button-container">
         <button onclick="toggleTheme()">Tema Scuro/Chiaro</button>
     </div>
-    <div class="style-container">
-        <select id="style-select">
-            <option value="grok">Stile risposta informale</option>
-            <option value="inama">Stile risposta Inama</option>
-        </select>
+    <div id="chat-container">
+        <div id="chat"></div>
     </div>
-    <div class="input-container">
-        <input id="input" type="text" placeholder="Scrivi la tua domanda...">
-        <button onclick="sendMessage()">Invia</button>
-        <button onclick="clearChat()">Cancella Chat</button>
+    <div class="input-and-style-container">
+        <div class="style-container">
+            <select id="style-select">
+                <option value="grok">Stile risposta informale</option>
+                <option value="inama">Stile risposta Inama</option>
+            </select>
+        </div>
+        <div class="input-container">
+            <input id="input" type="text" placeholder="Scrivi la tua domanda...">
+            <button onclick="sendMessage()">Invia</button>
+            <button onclick="clearChat()">Cancella Chat</button>
+        </div>
     </div>
-    <div id="chat"></div>
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
@@ -376,6 +428,23 @@ func main() {
             chat.scrollTop = chat.scrollHeight;
         }
 
+        function showTypingIndicator() {
+            const div = document.createElement("div");
+            div.id = "typing-indicator";
+            div.className = "message bot typing";
+            div.textContent = "ARCA-b sta scrivendo...";
+            chat.appendChild(div);
+            chat.scrollTop = chat.scrollHeight;
+            return div;
+        }
+
+        function removeTypingIndicator() {
+            const typingIndicator = document.getElementById("typing-indicator");
+            if (typingIndicator) {
+                typingIndicator.remove();
+            }
+        }
+
         async function sendMessage() {
             const question = input.value.trim();
             if (!question) return;
@@ -385,11 +454,22 @@ func main() {
             const style = styleSelect.value;
             localStorage.setItem("style", style);
 
-            const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style, {
-                credentials: "include"
-            });
-            const answer = await response.json();
-            addMessage(answer, false, style);
+            // Mostra l'indicatore "Sta scrivendo..."
+            const typingIndicator = showTypingIndicator();
+
+            try {
+                const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style, {
+                    credentials: "include"
+                });
+                const answer = await response.json();
+                // Rimuove l'indicatore "Sta scrivendo..." e mostra la risposta
+                removeTypingIndicator();
+                addMessage(answer, false, style);
+            } catch (error) {
+                // In caso di errore, rimuove l'indicatore e mostra un messaggio di errore
+                removeTypingIndicator();
+                addMessage("Errore: non sono riuscito a ottenere una risposta. Riprova più tardi.", false, style);
+            }
         }
 
         function clearChat() {
