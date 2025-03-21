@@ -30,7 +30,8 @@ func main() {
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
     geminiKey := os.Getenv("GEMINI_API_KEY")
 
-    // Verifica le chiavi API senza bloccare il server
+    // Log per verificare le chiavi API
+    fmt.Printf("Caricamento chiavi API...\n")
     if openAIKey == "" {
         fmt.Println("Errore: OPENAI_API_KEY non è impostata")
     } else {
@@ -111,8 +112,16 @@ func main() {
         return "", fmt.Errorf("nessuna risposta valida da DeepSeek: %s", string(bodyResp))
     }
 
+    // Health check endpoint
+    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Ricevuta richiesta su /health")
+        w.WriteHeader(http.StatusOK)
+        fmt.Fprintf(w, "Server is running on port %s", port)
+    })
+
     // Serve la pagina HTML
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Ricevuta richiesta su /")
         // Imposta un cookie per identificare la sessione
         sessionID, err := r.Cookie("session_id")
         if err != nil || sessionID == nil {
@@ -129,7 +138,7 @@ func main() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>ARCA-b Chat</title>
+    <title>ARCA-b Chat AI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
@@ -156,6 +165,25 @@ func main() {
             justify-content: center;
             gap: 10px;
             margin-bottom: 10px;
+        }
+        .style-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        select {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1em;
+            background-color: white;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+        body.dark select {
+            background-color: #333;
+            border-color: #555;
+            color: #e0e0e0;
         }
         #chat {
             border: 1px solid #ccc;
@@ -200,6 +228,15 @@ func main() {
         body.dark .bot {
             background-color: #444;
             color: #e0e0e0;
+        }
+        .style-label {
+            font-style: italic;
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        body.dark .style-label {
+            color: #aaa;
         }
         .input-container {
             display: flex;
@@ -266,14 +303,26 @@ func main() {
             .button-container button {
                 width: 100%;
             }
+            .style-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            select {
+                width: 100%;
+            }
         }
     </style>
 </head>
 <body>
-    <h1>ARCA-b Chat</h1>
+    <h1>ARCA-b Chat AI</h1>
     <div class="button-container">
         <button onclick="toggleTheme()">Tema Scuro/Chiaro</button>
-        <button onclick="toggleStyle()">Inama Style</button>
+    </div>
+    <div class="style-container">
+        <select id="style-select">
+            <option value="grok">Stile risposta informale</option>
+            <option value="inama">Stile risposta Inama</option>
+        </select>
     </div>
     <div class="input-container">
         <input id="input" type="text" placeholder="Scrivi la tua domanda...">
@@ -284,7 +333,7 @@ func main() {
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
-        let useGrokStyle = true;
+        const styleSelect = document.getElementById("style-select");
 
         // Carica il tema salvato
         if (localStorage.getItem("theme") === "dark") {
@@ -293,23 +342,27 @@ func main() {
 
         // Carica lo stile salvato
         if (localStorage.getItem("style") === "inama") {
-            useGrokStyle = false;
+            styleSelect.value = "inama";
+        } else {
+            styleSelect.value = "grok";
         }
 
         function toggleTheme() {
+            console.log("Toggling theme...");
             document.body.classList.toggle("dark");
             localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
+            console.log("Theme set to: " + (document.body.classList.contains("dark") ? "dark" : "light"));
         }
 
-        function toggleStyle() {
-            useGrokStyle = !useGrokStyle;
-            localStorage.setItem("style", useGrokStyle ? "grok" : "inama");
-            alert("Stile cambiato: " + (useGrokStyle ? "Grok Style" : "Inama Style"));
-        }
-
-        function addMessage(text, isUser) {
+        function addMessage(text, isUser, style) {
             const div = document.createElement("div");
-            div.textContent = text;
+            if (!isUser && style) {
+                const label = document.createElement("div");
+                label.className = "style-label";
+                label.textContent = "Risposta in stile " + (style === "grok" ? "informale" : "Inama");
+                chat.appendChild(label);
+            }
+            div.textContent = (isUser ? "Tu: " : "ARCA-b: ") + text;
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
@@ -318,14 +371,17 @@ func main() {
         async function sendMessage() {
             const question = input.value.trim();
             if (!question) return;
-            addMessage("Tu: " + question, true);
+            addMessage(question, true);
             input.value = "";
 
-            const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + (useGrokStyle ? "grok" : "inama"), {
+            const style = styleSelect.value;
+            localStorage.setItem("style", style);
+
+            const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style, {
                 credentials: "include"
             });
             const answer = await response.json();
-            addMessage("ARCA-b: " + answer, false);
+            addMessage(answer, false, style);
         }
 
         function clearChat() {
@@ -368,6 +424,7 @@ func main() {
 
     // Endpoint /ask
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Ricevuta richiesta su /ask")
         // Recupera il sessionID dal cookie
         sessionID, err := r.Cookie("session_id")
         if err != nil {
@@ -414,8 +471,8 @@ func main() {
             defer cancel()
             openAIResp, err := openAIClient.CreateChatCompletion(
                 ctx,
-                openai.ChatCompletionRequest{
-                    Model:    openai.GPT3Dot5Turbo,
+                openAI.ChatCompletionRequest{
+                    Model:    openAI.GPT3Dot5Turbo,
                     Messages: session.History,
                 },
             )
@@ -480,9 +537,9 @@ func main() {
         }
         var prompt string
         if style == "grok" {
-            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro e amichevole in stile Grok. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono chiaro, amichevole e sobrio, senza elementi satirici. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
         } else {
-            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono professionale, diretto e analitico, senza lo stile Grok. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
+            prompt = fmt.Sprintf("%s\nNuova domanda: '%s'\nTutte e tre le AI (OpenAI, DeepSeek, Gemini) hanno contribuito. Usa queste risposte senza mostrarle direttamente: OpenAI: %s, DeepSeek: %s, Gemini: %s. Fornisci una risposta esaustiva, dettagliata e utile che integri i loro contributi con molti dettagli, mantenendo un tono informale, eclettico, amichevole, diretto, quasi satirico ma tagliente ed acuto, in stile Inama. Assicurati di rispondere in modo contestuale, considerando lo storico della conversazione. Se una delle risposte contiene un errore, ignoralo e usa le altre risposte per costruire una risposta coerente.", historyPrompt, question, openAIAnswer, deepSeekAnswer, geminiAnswer)
         }
         var finalAnswer string
         if openAIKey == "" {
@@ -493,7 +550,7 @@ func main() {
             finalResp, err := openAIClient.CreateChatCompletion(
                 ctx,
                 openai.ChatCompletionRequest{
-                    Model:    openai.GPT3Dot5Turbo,
+                    Model:    openAI.GPT3Dot5Turbo,
                     Messages: []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: prompt}},
                 },
             )
