@@ -202,10 +202,11 @@ func main() {
 
     // Serve la pagina HTML
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        if r.Host == "arca-b-chat-ai.onrender.com" {
-            http.Redirect(w, r, "https://arcabchat.com"+r.RequestURI, http.StatusMovedPermanently)
-            return
-        }
+        // Commentato il reindirizzamento finché il dominio non è configurato
+        // if r.Host == "arca-b-chat-ai.onrender.com" {
+        //     http.Redirect(w, r, "https://arcabchat.com"+r.RequestURI, http.StatusMovedPermanently)
+        //     return
+        // }
         fmt.Println("Ricevuta richiesta su /")
         sessionID, err := r.Cookie("session_id")
         if err != nil || sessionID == nil {
