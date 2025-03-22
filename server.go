@@ -130,7 +130,8 @@ func main() {
         Timeout: 20 * time.Second,
     }
 
-    // Test preliminare per la chiave API di xAI
+    // Commentato il test preliminare per la chiave API di xAI finché non ci sono crediti
+    /*
     fmt.Println("Test preliminare per la chiave API di xAI...")
     testPrompt := "Test: rispondi con 'OK' se la chiave API funziona."
     testResponse, err := getGrokResponse(grokKey, client, testPrompt)
@@ -140,6 +141,7 @@ func main() {
     } else {
         fmt.Println("Test preliminare riuscito. Risposta di Grok:", testResponse)
     }
+    */
 
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
         if deepSeekKey == "" {
@@ -747,7 +749,7 @@ func main() {
         rawResponses.WriteString("#### Gemini\n")
         rawResponses.WriteString(geminiAnswer + "\n\n")
 
-        // 5. Sintesi tramite Grok con fallback
+        // 5. Sintesi con fallback (senza Grok finché non ci sono crediti)
         var synthesizedAnswer string
         // Escludi risposte con errori dal prompt di sintesi
         synthesisParts := []string{}
@@ -764,6 +766,8 @@ func main() {
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Errore: nessuna risposta valida da sintetizzare."
         } else {
+            // Commentato il tentativo di sintesi con Grok finché non ci sono crediti
+            /*
             synthesisPrompt := fmt.Sprintf(
                 "The user asked: '%s'. Synthesize the following answers into a single, comprehensive response that directly addresses the user's question. Integrate scientific, cultural, historical, and technological perspectives to reflect a global digital knowledge. Avoid bias, censorship, and propaganda. If the answers are off-topic or incomplete, provide a correct and complete response based on the question. Provide a clear and concise answer in %s style:\n\n%s",
                 question, style, strings.Join(synthesisParts, "\n\n"),
@@ -781,6 +785,17 @@ func main() {
                 } else {
                     synthesizedAnswer = "Errore: non sono riuscito a sintetizzare le risposte."
                 }
+            }
+            */
+            // Fallback temporaneo: usa la prima risposta valida disponibile
+            if !strings.Contains(openAIAnswer, "Errore") {
+                synthesizedAnswer = openAIAnswer + " (Nota: sintesi non disponibile, risposta di OpenAI.)"
+            } else if !strings.Contains(geminiAnswer, "Errore") {
+                synthesizedAnswer = geminiAnswer + " (Nota: sintesi non disponibile, risposta di Gemini.)"
+            } else if !strings.Contains(deepSeekAnswer, "Errore") {
+                synthesizedAnswer = deepSeekAnswer + " (Nota: sintesi non disponibile, risposta di DeepSeek.)"
+            } else {
+                synthesizedAnswer = "Errore: non sono riuscito a sintetizzare le risposte."
             }
         }
 
