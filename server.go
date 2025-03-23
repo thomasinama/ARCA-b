@@ -1,4 +1,4 @@
-package main
+kpackage main
 
 import (
     "context"
@@ -24,50 +24,56 @@ var (
     mutex    = &sync.Mutex{}
 )
 
-// getDeepInfraResponse for synthesizing responses using DeepInfra API
+// getDeepInfraResponse per sintetizzare le risposte usando l'API di DeepInfra
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
-        return "", fmt.Errorf("DEEPINFRA_API_KEY is not set")
+        return "", fmt.Errorf("DEEPINFRA_API_KEY non è impostata")
     }
 
+    // Sanifica il prompt
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
     logLimit := 100
     if len(prompt) < logLimit {
         logLimit = len(prompt)
     }
-    fmt.Println("Sending request to DeepInfra with prompt (first 100 chars):", prompt[:logLimit], "...")
+    fmt.Println("Invio richiesta a DeepInfra con prompt (prime 100 chars):", prompt[:logLimit], "...")
 
+    // Prepara la richiesta per DeepInfra (usiamo il modello Meta-Llama-3-8B-Instruct)
     payload := fmt.Sprintf(`{"model": "meta-llama/Meta-Llama-3-8B-Instruct", "messages": [{"role": "user", "content": "%s"}], "max_tokens": 1000, "temperature": 0.7}`, prompt)
     req, err := http.NewRequest("POST", "https://api.deepinfra.com/v1/openai/chat/completions", strings.NewReader(payload))
     if err != nil {
-        return "", fmt.Errorf("error creating DeepInfra request: %v", err)
+        return "", fmt.Errorf("errore nella creazione della richiesta a DeepInfra: %v", err)
     }
 
+    // Imposta gli header
     req.Header.Set("Authorization", "Bearer "+deepInfraKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
 
+    // Esegui la richiesta con retry
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with DeepInfra (attempt %d): %v\n", attempt, err)
+        fmt.Printf("Errore con DeepInfra (tentativo %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
-        return "", fmt.Errorf("error with DeepInfra after 3 attempts: %v", err)
+        return "", fmt.Errorf("errore con DeepInfra dopo 3 tentativi: %v", err)
     }
     defer resp.Body.Close()
 
+    // Leggi la risposta
     body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", fmt.Errorf("error reading DeepInfra response: %v", err)
+        return "", fmt.Errorf("errore nella lettura della risposta di DeepInfra: %v", err)
     }
-    fmt.Println("Raw response from DeepInfra (status %d): %s", resp.StatusCode, string(body))
+    fmt.Println("Risposta grezza da DeepInfra (status %d): %s", resp.StatusCode, string(body))
 
+    // Parsa la risposta JSON
     var deepInfraResult struct {
         Choices []struct {
             Message struct {
@@ -77,62 +83,68 @@ func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt strin
         Error string `json:"error"`
     }
     if err := json.Unmarshal(body, &deepInfraResult); err != nil {
-        return "", fmt.Errorf("error parsing DeepInfra response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("errore nel parsing di DeepInfra: %v, risposta grezza: %s", err, string(body))
     }
     if deepInfraResult.Error != "" {
-        return "", fmt.Errorf("error from DeepInfra: %s", deepInfraResult.Error)
+        return "", fmt.Errorf("errore da DeepInfra: %s", deepInfraResult.Error)
     }
     if len(deepInfraResult.Choices) == 0 || deepInfraResult.Choices[0].Message.Content == "" {
-        return "", fmt.Errorf("no valid response from DeepInfra: %s", string(body))
+        return "", fmt.Errorf("nessuna risposta valida da DeepInfra: %s", string(body))
     }
 
     return deepInfraResult.Choices[0].Message.Content, nil
 }
 
-// getAIMLAPIResponse for synthesizing responses using AIMLAPI
+// getAIMLAPIResponse per sintetizzare le risposte usando l'API di AIMLAPI
 func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (string, error) {
     if aimlKey == "" {
-        return "", fmt.Errorf("AIMLAPI_API_KEY is not set")
+        return "", fmt.Errorf("AIMLAPI_API_KEY non è impostata")
     }
 
+    // Sanifica il prompt
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
     logLimit := 100
     if len(prompt) < logLimit {
         logLimit = len(prompt)
     }
-    fmt.Println("Sending request to AIMLAPI with prompt (first 100 chars):", prompt[:logLimit], "...")
+    fmt.Println("Invio richiesta a AIMLAPI con prompt (prime 100 chars):", prompt[:logLimit], "...")
 
+    // Prepara la richiesta per AIMLAPI
     payload := fmt.Sprintf(`{"model": "Grok", "messages": [{"role": "user", "content": "%s"}]}`, prompt)
     req, err := http.NewRequest("POST", "https://api.aimlapi.com/v1/chat/completions", strings.NewReader(payload))
     if err != nil {
-        return "", fmt.Errorf("error creating AIMLAPI request: %v", err)
+        return "", fmt.Errorf("errore nella creazione della richiesta a AIMLAPI: %v", err)
     }
 
+    // Imposta gli header
     req.Header.Set("Authorization", "Bearer "+aimlKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
 
+    // Esegui la richiesta con retry
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with AIMLAPI (attempt %d): %v\n", attempt, err)
+        fmt.Printf("Errore con AIMLAPI (tentativo %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
-        return "", fmt.Errorf("error with AIMLAPI after 3 attempts: %v", err)
+        return "", fmt.Errorf("errore con AIMLAPI dopo 3 tentativi: %v", err)
     }
     defer resp.Body.Close()
 
+    // Leggi la risposta
     body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", fmt.Errorf("error reading AIMLAPI response: %v", err)
+        return "", fmt.Errorf("errore nella lettura della risposta di AIMLAPI: %v", err)
     }
-    fmt.Println("Raw response from AIMLAPI (status %d): %s", resp.StatusCode, string(body))
+    fmt.Println("Risposta grezza da AIMLAPI (status %d): %s", resp.StatusCode, string(body))
 
+    // Parsa la risposta JSON
     var aimlResult struct {
         Choices []struct {
             Message struct {
@@ -142,83 +154,91 @@ func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (str
         Error string `json:"error"`
     }
     if err := json.Unmarshal(body, &aimlResult); err != nil {
-        return "", fmt.Errorf("error parsing AIMLAPI response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("errore nel parsing di AIMLAPI: %v, risposta grezza: %s", err, string(body))
     }
     if aimlResult.Error != "" {
-        return "", fmt.Errorf("error from AIMLAPI: %s", aimlResult.Error)
+        return "", fmt.Errorf("errore da AIMLAPI: %s", aimlResult.Error)
     }
     if len(aimlResult.Choices) == 0 || aimlResult.Choices[0].Message.Content == "" {
-        return "", fmt.Errorf("no valid response from AIMLAPI: %s", string(body))
+        return "", fmt.Errorf("nessuna risposta valida da AIMLAPI: %s", string(body))
     }
 
     return aimlResult.Choices[0].Message.Content, nil
 }
 
-// getHuggingFaceResponse for synthesizing responses using Hugging Face API
+// getHuggingFaceResponse per sintetizzare le risposte usando l'API di Hugging Face
 func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (string, error) {
     if hfKey == "" {
-        return "", fmt.Errorf("HUGGINGFACE_API_KEY is not set")
+        return "", fmt.Errorf("HUGGINGFACE_API_KEY non è impostata")
     }
 
+    // Sanifica il prompt
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
     logLimit := 100
     if len(prompt) < logLimit {
         logLimit = len(prompt)
     }
-    fmt.Println("Sending request to Hugging Face with prompt (first 100 chars):", prompt[:logLimit], "...")
+    fmt.Println("Invio richiesta a Hugging Face con prompt (prime 100 chars):", prompt[:logLimit], "...")
 
+    // Prepara la richiesta per Hugging Face (usiamo DistilGPT-2)
     payload := fmt.Sprintf(`{"inputs": "%s", "parameters": {"max_length": 500, "temperature": 0.7, "top_p": 0.9}}`, prompt)
     req, err := http.NewRequest("POST", "https://api-inference.huggingface.co/models/distilgpt2", strings.NewReader(payload))
     if err != nil {
-        return "", fmt.Errorf("error creating Hugging Face request: %v", err)
+        return "", fmt.Errorf("errore nella creazione della richiesta a Hugging Face: %v", err)
     }
 
+    // Imposta gli header
     req.Header.Set("Authorization", "Bearer "+hfKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
 
+    // Esegui la richiesta con retry
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with Hugging Face (attempt %d): %v\n", attempt, err)
+        fmt.Printf("Errore con Hugging Face (tentativo %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
-        return "", fmt.Errorf("error with Hugging Face after 3 attempts: %v", err)
+        return "", fmt.Errorf("errore con Hugging Face dopo 3 tentativi: %v", err)
     }
     defer resp.Body.Close()
 
+    // Leggi la risposta
     body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", fmt.Errorf("error reading Hugging Face response: %v", err)
+        return "", fmt.Errorf("errore nella lettura della risposta di Hugging Face: %v", err)
     }
-    fmt.Println("Raw response from Hugging Face (status %d): %s", resp.StatusCode, string(body))
+    fmt.Println("Risposta grezza da Hugging Face (status %d): %s", resp.StatusCode, string(body))
 
+    // Parsa la risposta JSON
     var hfResult []struct {
         GeneratedText string `json:"generated_text"`
     }
     if err := json.Unmarshal(body, &hfResult); err != nil {
+        // Controlla se è un errore specifico
         var errorResult struct {
             Error string `json:"error"`
         }
         if json.Unmarshal(body, &errorResult) == nil && errorResult.Error != "" {
-            return "", fmt.Errorf("error from Hugging Face: %s", errorResult.Error)
+            return "", fmt.Errorf("errore da Hugging Face: %s", errorResult.Error)
         }
-        return "", fmt.Errorf("error parsing Hugging Face response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("errore nel parsing di Hugging Face: %v, risposta grezza: %s", err, string(body))
     }
     if len(hfResult) == 0 || hfResult[0].GeneratedText == "" {
-        return "", fmt.Errorf("no valid response from Hugging Face: %s", string(body))
+        return "", fmt.Errorf("nessuna risposta valida da Hugging Face: %s", string(body))
     }
 
+    // La risposta include il prompt, quindi rimuoviamolo
     generatedText := strings.TrimPrefix(hfResult[0].GeneratedText, prompt)
     return strings.TrimSpace(generatedText), nil
 }
 
-// detectBiasOrCensorship to filter out potentially censored or biased responses
+// detectBiasOrCensorship per filtrare risposte potenzialmente censurate o biased
 func detectBiasOrCensorship(response string) bool {
     censorshipSigns := []string{"non posso rispondere", "contenuto bloccato", "proibito", "censurato", "I cannot answer", "content blocked", "forbidden", "censored", ""}
     for _, sign := range censorshipSigns {
@@ -230,59 +250,60 @@ func detectBiasOrCensorship(response string) bool {
 }
 
 func main() {
+    // Carica le chiavi API dalle variabili d'ambiente
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
     geminiKey := os.Getenv("GEMINI_API_KEY")
-    deepInfraKey := os.Getenv("DEEPINFRA_API_KEY")
-    aimlKey := os.Getenv("AIMLAPI_API_KEY")
-    huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
+    deepInfraKey := os.Getenv("DEEPINFRA_API_KEY") // Chiave API per DeepInfra
+    aimlKey := os.Getenv("AIMLAPI_API_KEY")       // Chiave API per AIMLAPI
+    huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY") // Chiave API per Hugging Face
 
-    fmt.Printf("Loading API keys...\n")
+    fmt.Printf("Caricamento chiavi API...\n")
     if openAIKey == "" {
-        fmt.Println("Error: OPENAI_API_KEY is not set")
+        fmt.Println("Errore: OPENAI_API_KEY non è impostata")
     } else {
-        fmt.Println("OPENAI_API_KEY loaded successfully")
+        fmt.Println("OPENAI_API_KEY caricata correttamente")
     }
     if deepSeekKey == "" {
-        fmt.Println("Error: DEEPSEEK_API_KEY is not set")
+        fmt.Println("Errore: DEEPSEEK_API_KEY non è impostata")
     } else {
-        fmt.Println("DEEPSEEK_API_KEY loaded successfully")
+        fmt.Println("DEEPSEEK_API_KEY caricata correttamente")
     }
     if geminiKey == "" {
-        fmt.Println("Error: GEMINI_API_KEY is not set")
+        fmt.Println("Errore: GEMINI_API_KEY non è impostata")
     } else {
-        fmt.Println("GEMINI_API_KEY loaded successfully")
+        fmt.Println("GEMINI_API_KEY caricata correttamente")
     }
     if deepInfraKey == "" {
-        fmt.Println("Error: DEEPINFRA_API_KEY is not set")
+        fmt.Println("Errore: DEEPINFRA_API_KEY non è impostata")
     } else {
-        fmt.Println("DEEPINFRA_API_KEY loaded successfully")
+        fmt.Println("DEEPINFRA_API_KEY caricata correttamente")
     }
     if aimlKey == "" {
-        fmt.Println("Error: AIMLAPI_API_KEY is not set")
+        fmt.Println("Errore: AIMLAPI_API_KEY non è impostata")
     } else {
-        fmt.Println("AIMLAPI_API_KEY loaded successfully")
+        fmt.Println("AIMLAPI_API_KEY caricata correttamente")
     }
     if huggingFaceKey == "" {
-        fmt.Println("Error: HUGGINGFACE_API_KEY is not set")
+        fmt.Println("Errore: HUGGINGFACE_API_KEY non è impostata")
     } else {
-        fmt.Println("HUGGINGFACE_API_KEY loaded successfully")
+        fmt.Println("HUGGINGFACE_API_KEY caricata correttamente")
     }
 
     port := os.Getenv("PORT")
     if port == "" {
-        fmt.Println("PORT not specified, using default :10000")
-        port = "10000"
+        fmt.Println("PORT non specificata, uso default :10000")
+        port = "10000" // Default per test locali
     }
 
     openAIClient := openai.NewClient(openAIKey)
     client := &http.Client{
-        Timeout: 30 * time.Second,
+        Timeout: 30 * time.Second, // Aumentato il timeout per DeepSeek
     }
 
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
         if deepSeekKey == "" {
-            return "", fmt.Errorf("DEEPSEEK_API_KEY is not set")
+            return "", fmt.Errorf("DEEPSEEK_API_KEY non è impostata")
         }
         var deepSeekMessages []map[string]string
         for _, msg := range messages {
@@ -296,25 +317,25 @@ func main() {
             "messages": deepSeekMessages,
         })
         if err != nil {
-            return "", fmt.Errorf("error creating JSON body: %v", err)
+            return "", fmt.Errorf("errore nella creazione del body JSON: %v", err)
         }
         req, err := http.NewRequest("POST", "https://api.deepseek.com/v1/chat/completions", strings.NewReader(string(body)))
         if err != nil {
-            return "", fmt.Errorf("error creating request: %v", err)
+            return "", fmt.Errorf("errore nella creazione della richiesta: %v", err)
         }
         req.Header.Set("Authorization", "Bearer "+deepSeekKey)
         req.Header.Set("Content-Type", "application/json")
         resp, err := client.Do(req)
         if err != nil {
-            return "", fmt.Errorf("error requesting DeepSeek: %v", err)
+            return "", fmt.Errorf("errore nella richiesta a DeepSeek: %v", err)
         }
         defer resp.Body.Close()
         bodyResp, err := io.ReadAll(resp.Body)
         if err != nil {
-            return "", fmt.Errorf("error reading response: %v", err)
+            return "", fmt.Errorf("errore nella lettura della risposta: %v", err)
         }
         if resp.StatusCode != http.StatusOK {
-            return "", fmt.Errorf("invalid response from DeepSeek (status %d): %s", resp.StatusCode, string(bodyResp))
+            return "", fmt.Errorf("risposta non valida da DeepSeek (status %d): %s", resp.StatusCode, string(bodyResp))
         }
         var result struct {
             Choices []struct {
@@ -324,22 +345,24 @@ func main() {
             } `json:"choices"`
         }
         if err := json.Unmarshal(bodyResp, &result); err != nil {
-            return "", fmt.Errorf("error parsing JSON: %v, raw response: %s", err, string(bodyResp))
+            return "", fmt.Errorf("errore nel parsing JSON: %v, risposta grezza: %s", err, string(bodyResp))
         }
         if len(result.Choices) > 0 {
             return result.Choices[0].Message.Content, nil
         }
-        return "", fmt.Errorf("no valid response from DeepSeek: %s", string(bodyResp))
+        return "", fmt.Errorf("nessuna risposta valida da DeepSeek: %s", string(bodyResp))
     }
 
+    // Health check endpoint
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /health")
+        fmt.Println("Ricevuta richiesta su /health")
         w.WriteHeader(http.StatusOK)
         fmt.Fprintf(w, "Server is running on port %s", port)
     })
 
+    // Serve la pagina HTML
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /")
+        fmt.Println("Ricevuta richiesta su /")
         sessionID, err := r.Cookie("session_id")
         if err != nil || sessionID == nil {
             sessionID = &http.Cookie{
@@ -741,13 +764,14 @@ func main() {
 `)
     })
 
+    // Endpoint per la pagina di donazioni
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /donate")
+        fmt.Println("Ricevuta richiesta su /donate")
         w.Header().Set("Content-Type", "text/html")
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
-    <title>Donations - ARCA-b Chat AI</title>
+    <title>Donazioni - ARCA-b Chat AI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
@@ -757,21 +781,22 @@ func main() {
     </style>
 </head>
 <body>
-    <h1>Support ARCA-b Chat AI</h1>
-    <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you! 🙏</p>
+    <h1>Supporta ARCA-b Chat AI</h1>
+    <p>Le tue donazioni ci aiutano a migliorare il progetto e a mantenere un servizio libero da censura e propaganda. Grazie! 🙏</p>
     
-    <h2>Fiat Donations</h2>
+    <h2>Donazioni Fiat</h2>
     <a href="https://paypal.me/imeninama" target="_blank"><button>PayPal (imen.inama@yahoo.it)</button></a>
     
-    <h2>Crypto Donations</h2>
+    <h2>Donazioni Crypto</h2>
     <p><strong>USDT (Ethereum):</strong><br><span class="crypto-address">0x71ECB5C451ED648583722F5834fF6490D4570f7d</span></p>
     <p><strong>Bitcoin (BTC):</strong><br><span class="crypto-address">38JkmWhTFYosecu45ewoheYMjJw68sHSj3</span></p>
     
-    <p><small>Ensure you send USDT on the Ethereum network (ERC-20). Do not send other tokens or cryptocurrencies to these addresses.</small></p>
+    <p><small>Assicurati di inviare USDT sulla rete Ethereum (ERC-20). Non inviarci altri token o criptovalute su questi indirizzi.</small></p>
 </body>
 </html>`)
     })
 
+    // Endpoint per cancellare la chat
     http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
             http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -788,8 +813,9 @@ func main() {
         w.WriteHeader(http.StatusOK)
     })
 
+    // Endpoint /ask con sintesi tramite DeepInfra, AIMLAPI, Hugging Face
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /ask")
+        fmt.Println("Ricevuta richiesta su /ask")
         sessionID, err := r.Cookie("session_id")
         if err != nil {
             http.Error(w, "Error: Session not found", http.StatusBadRequest)
@@ -802,8 +828,8 @@ func main() {
             return
         }
         question = strings.TrimSpace(question)
-        question = strings.ReplaceAll(question, "<", "&lt;")
-        question = strings.ReplaceAll(question, ">", "&gt;")
+        question = strings.ReplaceAll(question, "<", "<")
+        question = strings.ReplaceAll(question, ">", ">")
 
         style := r.URL.Query().Get("style")
         if style == "" {
@@ -826,6 +852,7 @@ func main() {
             Content: question,
         })
 
+        // 1. OpenAI
         var openAIAnswer string
         if openAIKey == "" {
             openAIAnswer = "Error: OPENAI_API_KEY is not set."
@@ -847,6 +874,7 @@ func main() {
             }
         }
 
+        // 2. DeepSeek
         var deepSeekAnswer string
         deepSeekAnswer, err = getDeepSeekResponse(session.History)
         if err != nil {
@@ -854,6 +882,7 @@ func main() {
             deepSeekAnswer = "Error: DeepSeek did not respond."
         }
 
+        // 3. Gemini
         var geminiAnswer string
         if geminiKey == "" {
             geminiAnswer = "Error: GEMINI_API_KEY is not set."
@@ -896,6 +925,7 @@ func main() {
             }
         }
 
+        // 4. Costruisci rawResponses con filtro anti-censura
         rawResponses := strings.Builder{}
         rawResponses.WriteString("### Original Responses\n\n")
         synthesisParts := []string{}
@@ -903,38 +933,44 @@ func main() {
             synthesisParts = append(synthesisParts, fmt.Sprintf("OpenAI: %s", openAIAnswer))
             rawResponses.WriteString("#### OpenAI\n" + openAIAnswer + "\n\n")
         } else {
-            rawResponses.WriteString("#### OpenAI (excluded due to possible censorship)\n" + openAIAnswer + "\n\n")
+            rawResponses.WriteString("#### OpenAI (esclusa per possibile censura)\n" + openAIAnswer + "\n\n")
         }
         if !detectBiasOrCensorship(deepSeekAnswer) {
             synthesisParts = append(synthesisParts, fmt.Sprintf("DeepSeek: %s", deepSeekAnswer))
             rawResponses.WriteString("#### DeepSeek\n" + deepSeekAnswer + "\n\n")
         } else {
-            rawResponses.WriteString("#### DeepSeek (excluded due to possible censorship)\n" + deepSeekAnswer + "\n\n")
+            rawResponses.WriteString("#### DeepSeek (esclusa per possibile censura)\n" + deepSeekAnswer + "\n\n")
         }
         if !detectBiasOrCensorship(geminiAnswer) {
             synthesisParts = append(synthesisParts, fmt.Sprintf("Gemini: %s", geminiAnswer))
             rawResponses.WriteString("#### Gemini\n" + geminiAnswer + "\n\n")
         } else {
-            rawResponses.WriteString("#### Gemini (excluded due to possible censorship)\n" + geminiAnswer + "\n\n")
+            rawResponses.WriteString("#### Gemini (esclusa per possibile censura)\n" + geminiAnswer + "\n\n")
         }
 
+        // 5. Sintesi con DeepInfra, AIMLAPI, Hugging Face
         var synthesizedAnswer string
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
+            // Crea il prompt per la sintesi
             synthesisPrompt := fmt.Sprintf(
                 "The user asked: '%s'. Synthesize the following answers into a single, comprehensive response that directly addresses the user's question. Integrate scientific, cultural, historical, and technological perspectives to reflect a global digital knowledge. Avoid bias, censorship, and propaganda. If the answers are off-topic or incomplete, provide a correct and complete response based on the question. Provide a clear and concise answer in %s style:\n\n%s",
                 question, style, strings.Join(synthesisParts, "\n\n"),
             )
+            // Prova DeepInfra per la sintesi
             synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
                 fmt.Printf("Error synthesizing with DeepInfra: %v\n", err)
+                // Prova AIMLAPI come fallback
                 synthesizedAnswer, err = getAIMLAPIResponse(aimlKey, client, synthesisPrompt)
                 if err != nil {
                     fmt.Printf("Error synthesizing with AIMLAPI: %v\n", err)
+                    // Prova Hugging Face come ulteriore fallback
                     synthesizedAnswer, err = getHuggingFaceResponse(huggingFaceKey, client, synthesisPrompt)
                     if err != nil {
                         fmt.Printf("Error synthesizing with Hugging Face: %v\n", err)
+                        // Fallback finale: usa la prima risposta valida disponibile
                         if !strings.Contains(openAIAnswer, "Error") {
                             synthesizedAnswer = openAIAnswer + " (Note: Synthesis not available, using OpenAI response.)"
                         } else if !strings.Contains(geminiAnswer, "Error") {
@@ -949,11 +985,12 @@ func main() {
             }
         }
 
+        // 6. Risposta finale
         response := map[string]string{
             "synthesized":  synthesizedAnswer,
             "rawResponses": rawResponses.String(),
         }
-        fmt.Println("Sending JSON response:", response)
+        fmt.Println("Invio risposta JSON:", response)
 
         mutex.Lock()
         session.History = append(session.History, openai.ChatCompletionMessage{
@@ -970,9 +1007,9 @@ func main() {
         }
     })
 
-    fmt.Printf("Server listening on port %s...\n", port)
+    fmt.Printf("Server in ascolto sulla porta %s...\n", port)
     if err := http.ListenAndServe(":"+port, nil); err != nil {
-        fmt.Printf("Error starting server: %v\n", err)
+        fmt.Printf("Errore nell'avvio del server: %v\n", err)
         os.Exit(1)
     }
 }
