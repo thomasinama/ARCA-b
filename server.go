@@ -238,17 +238,6 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     return strings.TrimSpace(generatedText), nil
 }
 
-// detectBiasOrCensorship per filtrare risposte potenzialmente censurate o biased
-func detectBiasOrCensorship(response string) bool {
-    censorshipSigns := []string{"non posso rispondere", "contenuto bloccato", "proibito", "censurato", "I cannot answer", "content blocked", "forbidden", "censored", ""}
-    for _, sign := range censorshipSigns {
-        if strings.Contains(strings.ToLower(response), sign) {
-            return true
-        }
-    }
-    return false
-}
-
 func main() {
     // Carica le chiavi API dalle variabili d'ambiente
     openAIKey := os.Getenv("OPENAI_API_KEY")
@@ -771,27 +760,21 @@ func main() {
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
-    <title>Donazioni - ARCA-b Chat AI</title>
+    <title>Donations - ARCA-b Chat AI</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
         button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
         button:hover { background-color: #0056b3; }
-        .crypto-address { word-wrap: break-word; font-family: monospace; background-color: #f0f0f0; padding: 5px; border-radius: 5px; }
     </style>
 </head>
 <body>
-    <h1>Supporta ARCA-b Chat AI</h1>
-    <p>Le tue donazioni ci aiutano a migliorare il progetto e a mantenere un servizio libero da censura e propaganda. Grazie! 🙏</p>
-    
-    <h2>Donazioni Fiat</h2>
-    <a href="https://paypal.me/imeninama" target="_blank"><button>PayPal (imen.inama@yahoo.it)</button></a>
-    
-    <h2>Donazioni Crypto</h2>
-    <p><strong>USDT (Ethereum):</strong><br><span class="crypto-address">0x71ECB5C451ED648583722F5834fF6490D4570f7d</span></p>
-    <p><strong>Bitcoin (BTC):</strong><br><span class="crypto-address">38JkmWhTFYosecu45ewoheYMjJw68sHSj3</span></p>
-    
-    <p><small>Assicurati di inviare USDT sulla rete Ethereum (ERC-20). Non inviarci altri token o criptovalute su questi indirizzi.</small></p>
+    <h1>Support ARCA-b Chat AI</h1>
+    <p>Your donations help us unlock more APIs (like AIMLAPI and Hugging Face) to enhance the global digital knowledge available. Thank you! 🙏</p>
+    <h2>Fiat Donations</h2>
+    <a href="https://paypal.me/arcabchat?country.x=IT&locale.x=it_IT" target="_blank"><button>PayPal</button></a>
+    <h2>Crypto Donations</h2>
+    <a href="https://commerce.coinbase.com/checkout/your-checkout-id" target="_blank"><button>Bitcoin/Ethereum (Coinbase)</button></a>
 </body>
 </html>`)
     })
@@ -925,31 +908,30 @@ func main() {
             }
         }
 
-        // 4. Costruisci rawResponses con filtro anti-censura
+        // 4. Costruisci rawResponses
         rawResponses := strings.Builder{}
         rawResponses.WriteString("### Original Responses\n\n")
-        synthesisParts := []string{}
-        if !detectBiasOrCensorship(openAIAnswer) {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("OpenAI: %s", openAIAnswer))
-            rawResponses.WriteString("#### OpenAI\n" + openAIAnswer + "\n\n")
-        } else {
-            rawResponses.WriteString("#### OpenAI (esclusa per possibile censura)\n" + openAIAnswer + "\n\n")
-        }
-        if !detectBiasOrCensorship(deepSeekAnswer) {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("DeepSeek: %s", deepSeekAnswer))
-            rawResponses.WriteString("#### DeepSeek\n" + deepSeekAnswer + "\n\n")
-        } else {
-            rawResponses.WriteString("#### DeepSeek (esclusa per possibile censura)\n" + deepSeekAnswer + "\n\n")
-        }
-        if !detectBiasOrCensorship(geminiAnswer) {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("Gemini: %s", geminiAnswer))
-            rawResponses.WriteString("#### Gemini\n" + geminiAnswer + "\n\n")
-        } else {
-            rawResponses.WriteString("#### Gemini (esclusa per possibile censura)\n" + geminiAnswer + "\n\n")
-        }
+        rawResponses.WriteString("#### OpenAI\n")
+        rawResponses.WriteString(openAIAnswer + "\n\n")
+        rawResponses.WriteString("#### DeepSeek\n")
+        rawResponses.WriteString(deepSeekAnswer + "\n\n")
+        rawResponses.WriteString("#### Gemini\n")
+        rawResponses.WriteString(geminiAnswer + "\n\n")
 
         // 5. Sintesi con DeepInfra, AIMLAPI, Hugging Face
         var synthesizedAnswer string
+        // Escludi risposte con errori dal prompt di sintesi
+        synthesisParts := []string{}
+        if !strings.Contains(openAIAnswer, "Error") {
+            synthesisParts = append(synthesisParts, fmt.Sprintf("OpenAI: %s", openAIAnswer))
+        }
+        if !strings.Contains(deepSeekAnswer, "Error") {
+            synthesisParts = append(synthesisParts, fmt.Sprintf("DeepSeek: %s", deepSeekAnswer))
+        }
+        if !strings.Contains(geminiAnswer, "Error") {
+            synthesisParts = append(synthesisParts, fmt.Sprintf("Gemini: %s", geminiAnswer))
+        }
+
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
