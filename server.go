@@ -243,8 +243,8 @@ func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
     geminiKey := os.Getenv("GEMINI_API_KEY")
-    deepInfraKey := os.Getenv("DEEPINFRA_API_KEY") // Chiave API per DeepInfra
-    aimlKey := os.Getenv("AIMLAPI_API_KEY")       // Chiave API per AIMLAPI
+    deepInfraKey := os.Getenv("DEEPINFRA_API_KEY")     // Chiave API per DeepInfra
+    aimlKey := os.Getenv("AIMLAPI_API_KEY")           // Chiave API per AIMLAPI
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY") // Chiave API per Hugging Face
 
     fmt.Printf("Caricamento chiavi API...\n")
@@ -639,11 +639,6 @@ func main() {
             styleSelect.value = "grok";
         }
 
-        const emojis = ["😊", "🚀", "🌟", "🎉", "🤓", "💡", "👍"];
-        function getRandomEmoji() {
-            return emojis[Math.floor(Math.random() * emojis.length)];
-        }
-
         function toggleTheme() {
             document.body.classList.toggle("dark");
             localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
@@ -657,7 +652,7 @@ func main() {
                 label.textContent = "Response in " + (style === "grok" ? "informal" : "ARCA-b") + " style";
                 chat.appendChild(label);
             }
-            const messageText = (isUser ? "You: " : "ARCA-b: ") + text + (isUser ? "" : " " + getRandomEmoji());
+            const messageText = (isUser ? "You: " : "ARCA-b: ") + text;
             div.innerHTML = messageText.replace(/\n/g, "<br>");
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
@@ -753,9 +748,9 @@ func main() {
 `)
     })
 
-    // Endpoint per la pagina di donazioni
+    // Endpoint per la pagina di donazioni in inglese senza emoji
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Ricevuta richiesta su /donate")
+        fmt.Println("Received request on /donate")
         w.Header().Set("Content-Type", "text/html")
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
@@ -766,15 +761,21 @@ func main() {
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
         button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
         button:hover { background-color: #0056b3; }
+        .crypto-address { word-wrap: break-word; font-family: monospace; background-color: #f0f0f0; padding: 5px; border-radius: 5px; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
-    <p>Your donations help us unlock more APIs (like AIMLAPI and Hugging Face) to enhance the global digital knowledge available. Thank you! 🙏</p>
+    <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you!</p>
+    
     <h2>Fiat Donations</h2>
-    <a href="https://paypal.me/arcabchat?country.x=IT&locale.x=it_IT" target="_blank"><button>PayPal</button></a>
+    <a href="https://www.paypal.com/pool/9dmdhEacmM?sr=ancr" target="_blank"><button>PayPal</button></a>
+    
     <h2>Crypto Donations</h2>
-    <a href="https://commerce.coinbase.com/checkout/your-checkout-id" target="_blank"><button>Bitcoin/Ethereum (Coinbase)</button></a>
+    <p><strong>USDT (Ethereum):</strong><br><span class="crypto-address">0x71ECB5C451ED648583722F5834fF6490D4570f7d</span></p>
+    <p><strong>Bitcoin (BTC):</strong><br><span class="crypto-address">38JkmWhTFYosecu45ewoheYMjJw68sHSj3</span></p>
+    
+    <p><small>Make sure to send USDT on the Ethereum network (ERC-20). Do not send other tokens or cryptocurrencies to these addresses.</small></p>
 </body>
 </html>`)
     })
@@ -796,7 +797,7 @@ func main() {
         w.WriteHeader(http.StatusOK)
     })
 
-    // Endpoint /ask con sintesi tramite DeepInfra, AIMLAPI, Hugging Face
+    // Endpoint /ask con sintesi personalizzata per stile ARCA-b e Grok
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Ricevuta richiesta su /ask")
         sessionID, err := r.Cookie("session_id")
@@ -908,38 +909,37 @@ func main() {
             }
         }
 
-        // 4. Costruisci rawResponses
+        // 4. Costruisci rawResponses e synthesisParts senza filtro censura
         rawResponses := strings.Builder{}
         rawResponses.WriteString("### Original Responses\n\n")
-        rawResponses.WriteString("#### OpenAI\n")
-        rawResponses.WriteString(openAIAnswer + "\n\n")
-        rawResponses.WriteString("#### DeepSeek\n")
-        rawResponses.WriteString(deepSeekAnswer + "\n\n")
-        rawResponses.WriteString("#### Gemini\n")
-        rawResponses.WriteString(geminiAnswer + "\n\n")
+        synthesisParts := []string{
+            fmt.Sprintf("OpenAI: %s", openAIAnswer),
+            fmt.Sprintf("DeepSeek: %s", deepSeekAnswer),
+            fmt.Sprintf("Gemini: %s", geminiAnswer),
+        }
+        rawResponses.WriteString("#### OpenAI\n" + openAIAnswer + "\n\n")
+        rawResponses.WriteString("#### DeepSeek\n" + deepSeekAnswer + "\n\n")
+        rawResponses.WriteString("#### Gemini\n" + geminiAnswer + "\n\n")
 
         // 5. Sintesi con DeepInfra, AIMLAPI, Hugging Face
         var synthesizedAnswer string
-        // Escludi risposte con errori dal prompt di sintesi
-        synthesisParts := []string{}
-        if !strings.Contains(openAIAnswer, "Error") {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("OpenAI: %s", openAIAnswer))
-        }
-        if !strings.Contains(deepSeekAnswer, "Error") {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("DeepSeek: %s", deepSeekAnswer))
-        }
-        if !strings.Contains(geminiAnswer, "Error") {
-            synthesisParts = append(synthesisParts, fmt.Sprintf("Gemini: %s", geminiAnswer))
-        }
-
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
-            // Crea il prompt per la sintesi
-            synthesisPrompt := fmt.Sprintf(
-                "The user asked: '%s'. Synthesize the following answers into a single, comprehensive response that directly addresses the user's question. Integrate scientific, cultural, historical, and technological perspectives to reflect a global digital knowledge. Avoid bias, censorship, and propaganda. If the answers are off-topic or incomplete, provide a correct and complete response based on the question. Provide a clear and concise answer in %s style:\n\n%s",
-                question, style, strings.Join(synthesisParts, "\n\n"),
-            )
+            // Prompt personalizzato per stile ARCA-b o Grok
+            var synthesisPrompt string
+            if style == "arca-b" {
+                synthesisPrompt = fmt.Sprintf(
+                    "L'utente ha chiesto: '%s'. Mescola queste risposte in una sola, bella chiara, che risponde dritto al punto. Tira fuori il meglio da ognuna, buttando dentro un po’ di scienza, cultura, storia e tecnologia, ma fallo in stile ARCA-b: semplice, informale, come se lo spiegassi a un amico davanti a una birra. Niente paroloni, solo roba interessante:\n\n%s",
+                    question, strings.Join(synthesisParts, "\n\n"),
+                )
+            } else { // stile grok o default
+                synthesisPrompt = fmt.Sprintf(
+                    "The user asked: '%s'. Synthesize the following answers into a single, comprehensive response that directly addresses the user's question. Integrate the most interesting aspects from each response, combining scientific, cultural, historical, and technological perspectives to reflect a global digital knowledge. Provide a clear and concise answer in a formal, detailed style:\n\n%s",
+                    question, strings.Join(synthesisParts, "\n\n"),
+                )
+            }
+
             // Prova DeepInfra per la sintesi
             synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
