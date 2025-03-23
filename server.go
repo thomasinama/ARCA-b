@@ -346,7 +346,7 @@ func main() {
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Ricevuta richiesta su /health")
         w.WriteHeader(http.StatusOK)
-        fmt.Fprintf(w, "Server is running on port %s", port)
+        fmt.Fprintf(w, "ARCA-b Chat AI is running on arcab-global-ai.org:%s", port)
     })
 
     // Serve la pagina HTML
