@@ -24,70 +24,218 @@ var (
     mutex    = &sync.Mutex{}
 )
 
-// getGrokResponse deve essere definita prima di essere chiamata nel main
-func getGrokResponse(grokKey string, client *http.Client, question string) (string, error) {
-    if grokKey == "" {
-        return "", fmt.Errorf("GROK_API_KEY non è impostata")
+// getDeepInfraResponse per sintetizzare le risposte usando l'API di DeepInfra
+func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
+    if deepInfraKey == "" {
+        return "", fmt.Errorf("DEEPINFRA_API_KEY non è impostata")
     }
-    // Sanifica il prompt per evitare problemi con caratteri speciali
-    question = strings.ReplaceAll(question, "\n", " ")
-    question = strings.ReplaceAll(question, "\"", "\\\"")
-    // Usa un limite hardcoded per il log
-    logLimit := 100
-    if len(question) < logLimit {
-        logLimit = len(question)
-    }
-    fmt.Println("Invio richiesta a Grok con prompt (prime 100 chars):", question[:logLimit], "...")
 
-    // Aggiungi un meccanismo di retry
-    var grokResp *http.Response
-    var err error
+    // Sanifica il prompt
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Invio richiesta a DeepInfra con prompt (prime 100 chars):", prompt[:logLimit], "...")
+
+    // Prepara la richiesta per DeepInfra (usiamo il modello Meta-Llama-3-8B-Instruct)
+    payload := fmt.Sprintf(`{"model": "meta-llama/Meta-Llama-3-8B-Instruct", "messages": [{"role": "user", "content": "%s"}], "max_tokens": 1000, "temperature": 0.7}`, prompt)
+    req, err := http.NewRequest("POST", "https://api.deepinfra.com/v1/openai/chat/completions", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("errore nella creazione della richiesta a DeepInfra: %v", err)
+    }
+
+    // Imposta gli header
+    req.Header.Set("Authorization", "Bearer "+deepInfraKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    // Esegui la richiesta con retry
+    var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
-        grokReq, err := http.NewRequest("POST", "https://api.x.ai/v1/chat/completions",
-            strings.NewReader(fmt.Sprintf(`{"model":"grok","messages":[{"role":"user","content":"%s"}]}`, question)))
-        if err != nil {
-            return "", fmt.Errorf("errore nella creazione della richiesta a Grok (tentativo %d): %v", attempt, err)
-        }
-        grokReq.Header.Set("Authorization", "Bearer "+grokKey)
-        grokReq.Header.Set("Content-Type", "application/json")
-        grokResp, err = client.Do(grokReq)
+        resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Errore con Grok (tentativo %d): %v\n", attempt, err)
-        time.Sleep(time.Second * time.Duration(attempt)) // Attendi prima di riprovare
+        fmt.Printf("Errore con DeepInfra (tentativo %d): %v\n", attempt, err)
+        time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
-        return "", fmt.Errorf("errore con Grok dopo 3 tentativi: %v", err)
+        return "", fmt.Errorf("errore con DeepInfra dopo 3 tentativi: %v", err)
     }
-    defer grokResp.Body.Close()
+    defer resp.Body.Close()
 
-    body, err := io.ReadAll(grokResp.Body)
+    // Leggi la risposta
+    body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", fmt.Errorf("errore nella lettura della risposta di Grok: %v", err)
+        return "", fmt.Errorf("errore nella lettura della risposta di DeepInfra: %v", err)
     }
-    fmt.Println("Risposta grezza da Grok (status %d): %s", grokResp.StatusCode, string(body))
+    fmt.Println("Risposta grezza da DeepInfra (status %d): %s", resp.StatusCode, string(body))
 
-    var grokResult struct {
+    // Parsa la risposta JSON
+    var deepInfraResult struct {
         Choices []struct {
             Message struct {
                 Content string `json:"content"`
             } `json:"message"`
         } `json:"choices"`
-        Error *struct {
-            Message string `json:"message"`
-        } `json:"error"`
+        Error string `json:"error"`
     }
-    if err := json.Unmarshal(body, &grokResult); err != nil {
-        return "", fmt.Errorf("errore nel parsing di Grok: %v, risposta grezza: %s", err, string(body))
+    if err := json.Unmarshal(body, &deepInfraResult); err != nil {
+        return "", fmt.Errorf("errore nel parsing di DeepInfra: %v, risposta grezza: %s", err, string(body))
     }
-    if grokResult.Error != nil {
-        return "", fmt.Errorf("errore da xAI: %s", grokResult.Error.Message)
+    if deepInfraResult.Error != "" {
+        return "", fmt.Errorf("errore da DeepInfra: %s", deepInfraResult.Error)
     }
-    if len(grokResult.Choices) == 0 {
-        return "", fmt.Errorf("nessuna risposta valida da Grok: %s", string(body))
+    if len(deepInfraResult.Choices) == 0 || deepInfraResult.Choices[0].Message.Content == "" {
+        return "", fmt.Errorf("nessuna risposta valida da DeepInfra: %s", string(body))
     }
-    return grokResult.Choices[0].Message.Content, nil
+
+    return deepInfraResult.Choices[0].Message.Content, nil
+}
+
+// getAIMLAPIResponse per sintetizzare le risposte usando l'API di AIMLAPI
+func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (string, error) {
+    if aimlKey == "" {
+        return "", fmt.Errorf("AIMLAPI_API_KEY non è impostata")
+    }
+
+    // Sanifica il prompt
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Invio richiesta a AIMLAPI con prompt (prime 100 chars):", prompt[:logLimit], "...")
+
+    // Prepara la richiesta per AIMLAPI
+    payload := fmt.Sprintf(`{"model": "Grok", "messages": [{"role": "user", "content": "%s"}]}`, prompt)
+    req, err := http.NewRequest("POST", "https://api.aimlapi.com/v1/chat/completions", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("errore nella creazione della richiesta a AIMLAPI: %v", err)
+    }
+
+    // Imposta gli header
+    req.Header.Set("Authorization", "Bearer "+aimlKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    // Esegui la richiesta con retry
+    var resp *http.Response
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err = client.Do(req)
+        if err == nil {
+            break
+        }
+        fmt.Printf("Errore con AIMLAPI (tentativo %d): %v\n", attempt, err)
+        time.Sleep(time.Second * time.Duration(attempt))
+    }
+    if err != nil {
+        return "", fmt.Errorf("errore con AIMLAPI dopo 3 tentativi: %v", err)
+    }
+    defer resp.Body.Close()
+
+    // Leggi la risposta
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("errore nella lettura della risposta di AIMLAPI: %v", err)
+    }
+    fmt.Println("Risposta grezza da AIMLAPI (status %d): %s", resp.StatusCode, string(body))
+
+    // Parsa la risposta JSON
+    var aimlResult struct {
+        Choices []struct {
+            Message struct {
+                Content string `json:"content"`
+            } `json:"message"`
+        } `json:"choices"`
+        Error string `json:"error"`
+    }
+    if err := json.Unmarshal(body, &aimlResult); err != nil {
+        return "", fmt.Errorf("errore nel parsing di AIMLAPI: %v, risposta grezza: %s", err, string(body))
+    }
+    if aimlResult.Error != "" {
+        return "", fmt.Errorf("errore da AIMLAPI: %s", aimlResult.Error)
+    }
+    if len(aimlResult.Choices) == 0 || aimlResult.Choices[0].Message.Content == "" {
+        return "", fmt.Errorf("nessuna risposta valida da AIMLAPI: %s", string(body))
+    }
+
+    return aimlResult.Choices[0].Message.Content, nil
+}
+
+// getHuggingFaceResponse per sintetizzare le risposte usando l'API di Hugging Face
+func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (string, error) {
+    if hfKey == "" {
+        return "", fmt.Errorf("HUGGINGFACE_API_KEY non è impostata")
+    }
+
+    // Sanifica il prompt
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Invio richiesta a Hugging Face con prompt (prime 100 chars):", prompt[:logLimit], "...")
+
+    // Prepara la richiesta per Hugging Face (usiamo DistilGPT-2)
+    payload := fmt.Sprintf(`{"inputs": "%s", "parameters": {"max_length": 500, "temperature": 0.7, "top_p": 0.9}}`, prompt)
+    req, err := http.NewRequest("POST", "https://api-inference.huggingface.co/models/distilgpt2", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("errore nella creazione della richiesta a Hugging Face: %v", err)
+    }
+
+    // Imposta gli header
+    req.Header.Set("Authorization", "Bearer "+hfKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    // Esegui la richiesta con retry
+    var resp *http.Response
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err = client.Do(req)
+        if err == nil {
+            break
+        }
+        fmt.Printf("Errore con Hugging Face (tentativo %d): %v\n", attempt, err)
+        time.Sleep(time.Second * time.Duration(attempt))
+    }
+    if err != nil {
+        return "", fmt.Errorf("errore con Hugging Face dopo 3 tentativi: %v", err)
+    }
+    defer resp.Body.Close()
+
+    // Leggi la risposta
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("errore nella lettura della risposta di Hugging Face: %v", err)
+    }
+    fmt.Println("Risposta grezza da Hugging Face (status %d): %s", resp.StatusCode, string(body))
+
+    // Parsa la risposta JSON
+    var hfResult []struct {
+        GeneratedText string `json:"generated_text"`
+    }
+    if err := json.Unmarshal(body, &hfResult); err != nil {
+        // Controlla se è un errore specifico
+        var errorResult struct {
+            Error string `json:"error"`
+        }
+        if json.Unmarshal(body, &errorResult) == nil && errorResult.Error != "" {
+            return "", fmt.Errorf("errore da Hugging Face: %s", errorResult.Error)
+        }
+        return "", fmt.Errorf("errore nel parsing di Hugging Face: %v, risposta grezza: %s", err, string(body))
+    }
+    if len(hfResult) == 0 || hfResult[0].GeneratedText == "" {
+        return "", fmt.Errorf("nessuna risposta valida da Hugging Face: %s", string(body))
+    }
+
+    // La risposta include il prompt, quindi rimuoviamolo
+    generatedText := strings.TrimPrefix(hfResult[0].GeneratedText, prompt)
+    return strings.TrimSpace(generatedText), nil
 }
 
 func main() {
@@ -95,7 +243,9 @@ func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
     geminiKey := os.Getenv("GEMINI_API_KEY")
-    grokKey := "xai-SUGB15xF6kpFtSXVz73yAUjVeoQVUGM1VLFmX6Bj5HsN8hsSscWbs4wRw6YuXVAG0U4rbnheWgJ8tai0" // Chiave API di xAI
+    deepInfraKey := os.Getenv("DEEPINFRA_API_KEY") // Chiave API per DeepInfra
+    aimlKey := os.Getenv("AIMLAPI_API_KEY")       // Chiave API per AIMLAPI
+    huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY") // Chiave API per Hugging Face
 
     fmt.Printf("Caricamento chiavi API...\n")
     if openAIKey == "" {
@@ -113,10 +263,20 @@ func main() {
     } else {
         fmt.Println("GEMINI_API_KEY caricata correttamente")
     }
-    if grokKey == "" {
-        fmt.Println("Errore: GROK_API_KEY non è impostata")
+    if deepInfraKey == "" {
+        fmt.Println("Errore: DEEPINFRA_API_KEY non è impostata")
     } else {
-        fmt.Println("GROK_API_KEY caricata correttamente")
+        fmt.Println("DEEPINFRA_API_KEY caricata correttamente")
+    }
+    if aimlKey == "" {
+        fmt.Println("Errore: AIMLAPI_API_KEY non è impostata")
+    } else {
+        fmt.Println("AIMLAPI_API_KEY caricata correttamente")
+    }
+    if huggingFaceKey == "" {
+        fmt.Println("Errore: HUGGINGFACE_API_KEY non è impostata")
+    } else {
+        fmt.Println("HUGGINGFACE_API_KEY caricata correttamente")
     }
 
     port := os.Getenv("PORT")
@@ -127,21 +287,8 @@ func main() {
 
     openAIClient := openai.NewClient(openAIKey)
     client := &http.Client{
-        Timeout: 20 * time.Second,
+        Timeout: 30 * time.Second, // Aumentato il timeout per DeepSeek
     }
-
-    // Commentato il test preliminare per la chiave API di xAI finché non ci sono crediti
-    /*
-    fmt.Println("Test preliminare per la chiave API di xAI...")
-    testPrompt := "Test: rispondi con 'OK' se la chiave API funziona."
-    testResponse, err := getGrokResponse(grokKey, client, testPrompt)
-    if err != nil {
-        fmt.Printf("Errore nel test preliminare della chiave API di xAI: %v\n", err)
-        fmt.Println("Procedo senza sintesi di Grok, usando un fallback.")
-    } else {
-        fmt.Println("Test preliminare riuscito. Risposta di Grok:", testResponse)
-    }
-    */
 
     getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
         if deepSeekKey == "" {
@@ -204,11 +351,6 @@ func main() {
 
     // Serve la pagina HTML
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        // Commentato il reindirizzamento finché il dominio non è configurato
-        // if r.Host == "arca-b-chat-ai.onrender.com" {
-        //     http.Redirect(w, r, "https://arcabchat.com"+r.RequestURI, http.StatusMovedPermanently)
-        //     return
-        // }
         fmt.Println("Ricevuta richiesta su /")
         sessionID, err := r.Cookie("session_id")
         if err != nil || sessionID == nil {
@@ -461,10 +603,11 @@ func main() {
 <body>
     <h1>ARCA-b Chat AI</h1>
     <p style="text-align: center; font-size: 0.9em; color: #666;">
-        Nota: Le conversazioni vengono salvate temporaneamente per migliorare l'esperienza. Non inserire informazioni personali o sensibili.
+        Note: Conversations are temporarily saved to improve the experience. Do not enter personal or sensitive information.
     </p>
     <div class="button-container">
-        <button onclick="toggleTheme()">Tema Scuro/Chiaro</button>
+        <button onclick="toggleTheme()">Dark/Light Theme</button>
+        <a href="/donate"><button>Donate</button></a>
     </div>
     <div id="chat-container">
         <div id="chat"></div>
@@ -472,14 +615,14 @@ func main() {
     <div class="input-and-style-container">
         <div class="style-container">
             <select id="style-select">
-                <option value="grok">Stile risposta informale</option>
-                <option value="arca-b">Stile risposta ARCA-b</option>
+                <option value="grok">Informal response style</option>
+                <option value="arca-b">ARCA-b response style</option>
             </select>
         </div>
         <div class="input-container">
-            <input id="input" type="text" placeholder="Scrivi la tua domanda...">
-            <button onclick="sendMessage()">Invia</button>
-            <button onclick="clearChat()">Cancella Chat</button>
+            <input id="input" type="text" placeholder="Write your question...">
+            <button onclick="sendMessage()">Send</button>
+            <button onclick="clearChat()">Clear Chat</button>
         </div>
     </div>
     <script>
@@ -511,10 +654,10 @@ func main() {
             if (!isUser && style) {
                 const label = document.createElement("div");
                 label.className = "style-label";
-                label.textContent = "Risposta in stile " + (style === "grok" ? "informale" : "ARCA-b");
+                label.textContent = "Response in " + (style === "grok" ? "informal" : "ARCA-b") + " style";
                 chat.appendChild(label);
             }
-            const messageText = (isUser ? "Tu: " : "ARCA-b: ") + text + (isUser ? "" : " " + getRandomEmoji());
+            const messageText = (isUser ? "You: " : "ARCA-b: ") + text + (isUser ? "" : " " + getRandomEmoji());
             div.innerHTML = messageText.replace(/\n/g, "<br>");
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
@@ -523,15 +666,15 @@ func main() {
                 console.log("Raw responses received:", rawResponses);
                 const toggle = document.createElement("span");
                 toggle.className = "toggle-details";
-                toggle.textContent = "Mostra risposte originali";
+                toggle.textContent = "Show original responses";
                 toggle.onclick = function() {
                     const details = this.nextSibling;
                     if (details.style.display === "none" || details.style.display === "") {
                         details.style.display = "block";
-                        this.textContent = "Nascondi risposte originali";
+                        this.textContent = "Hide original responses";
                     } else {
                         details.style.display = "none";
-                        this.textContent = "Mostra risposte originali";
+                        this.textContent = "Show original responses";
                     }
                 };
                 chat.appendChild(toggle);
@@ -551,7 +694,7 @@ func main() {
             const div = document.createElement("div");
             div.id = "typing-indicator";
             div.className = "message bot typing";
-            div.textContent = "ARCA-b sta scrivendo...";
+            div.textContent = "ARCA-b is typing...";
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
             return div;
@@ -583,12 +726,12 @@ func main() {
                 console.log("Response received from /ask:", answer[0]);
                 removeTypingIndicator();
                 const rawResponses = answer[0].rawResponses || "";
-                const synthesizedAnswer = answer[0].synthesized || "Errore: nessuna risposta sintetizzata.";
+                const synthesizedAnswer = answer[0].synthesized || "Error: No synthesized response.";
                 addMessage(synthesizedAnswer, false, style, rawResponses);
             } catch (error) {
-                console.error("Errore durante la richiesta:", error);
+                console.error("Error during request:", error);
                 removeTypingIndicator();
-                addMessage("Errore: non sono riuscito a ottenere una risposta.", false, style);
+                addMessage("Error: I couldn't get a response.", false, style);
             }
         }
 
@@ -610,15 +753,41 @@ func main() {
 `)
     })
 
+    // Endpoint per la pagina di donazioni
+    http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Ricevuta richiesta su /donate")
+        w.Header().Set("Content-Type", "text/html")
+        fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head>
+    <title>Donations - ARCA-b Chat AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
+        button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
+        button:hover { background-color: #0056b3; }
+    </style>
+</head>
+<body>
+    <h1>Support ARCA-b Chat AI</h1>
+    <p>Your donations help us unlock more APIs (like AIMLAPI and Hugging Face) to enhance the global digital knowledge available. Thank you! 🙏</p>
+    <h2>Fiat Donations</h2>
+    <a href="https://paypal.me/arcabchat?country.x=IT&locale.x=it_IT" target="_blank"><button>PayPal</button></a>
+    <h2>Crypto Donations</h2>
+    <a href="https://commerce.coinbase.com/checkout/your-checkout-id" target="_blank"><button>Bitcoin/Ethereum (Coinbase)</button></a>
+</body>
+</html>`)
+    })
+
     // Endpoint per cancellare la chat
     http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
-            http.Error(w, "Metodo non consentito", http.StatusMethodNotAllowed)
+            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
             return
         }
         sessionID, err := r.Cookie("session_id")
         if err != nil {
-            http.Error(w, "Errore: sessione non trovata", http.StatusBadRequest)
+            http.Error(w, "Error: Session not found", http.StatusBadRequest)
             return
         }
         mutex.Lock()
@@ -627,18 +796,18 @@ func main() {
         w.WriteHeader(http.StatusOK)
     })
 
-    // Endpoint /ask con sintesi tramite Grok
+    // Endpoint /ask con sintesi tramite DeepInfra, AIMLAPI, Hugging Face
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Ricevuta richiesta su /ask")
         sessionID, err := r.Cookie("session_id")
         if err != nil {
-            http.Error(w, "Errore: sessione non trovata", http.StatusBadRequest)
+            http.Error(w, "Error: Session not found", http.StatusBadRequest)
             return
         }
 
         question := r.URL.Query().Get("question")
         if question == "" {
-            http.Error(w, "Errore: specifica una domanda con ?question=", http.StatusBadRequest)
+            http.Error(w, "Error: Please specify a question with ?question=", http.StatusBadRequest)
             return
         }
         question = strings.TrimSpace(question)
@@ -669,7 +838,7 @@ func main() {
         // 1. OpenAI
         var openAIAnswer string
         if openAIKey == "" {
-            openAIAnswer = "Errore: OPENAI_API_KEY non è impostata."
+            openAIAnswer = "Error: OPENAI_API_KEY is not set."
         } else {
             ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
             defer cancel()
@@ -681,8 +850,8 @@ func main() {
                 },
             )
             if err != nil {
-                fmt.Printf("Errore con OpenAI: %v\n", err)
-                openAIAnswer = "Errore: OpenAI non ha risposto."
+                fmt.Printf("Error with OpenAI: %v\n", err)
+                openAIAnswer = "Error: OpenAI did not respond."
             } else {
                 openAIAnswer = openAIResp.Choices[0].Message.Content
             }
@@ -692,14 +861,14 @@ func main() {
         var deepSeekAnswer string
         deepSeekAnswer, err = getDeepSeekResponse(session.History)
         if err != nil {
-            fmt.Printf("Errore con DeepSeek: %v\n", err)
-            deepSeekAnswer = "Errore: DeepSeek non ha risposto."
+            fmt.Printf("Error with DeepSeek: %v\n", err)
+            deepSeekAnswer = "Error: DeepSeek did not respond."
         }
 
         // 3. Gemini
         var geminiAnswer string
         if geminiKey == "" {
-            geminiAnswer = "Errore: GEMINI_API_KEY non è impostata."
+            geminiAnswer = "Error: GEMINI_API_KEY is not set."
         } else {
             historyForGemini := ""
             for _, msg := range session.History {
@@ -708,14 +877,14 @@ func main() {
             geminiReq, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                 strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
             if err != nil {
-                fmt.Printf("Errore nella creazione della richiesta a Gemini: %v\n", err)
-                geminiAnswer = "Errore: Gemini non ha risposto."
+                fmt.Printf("Error creating request to Gemini: %v\n", err)
+                geminiAnswer = "Error: Gemini did not respond."
             } else {
                 geminiReq.Header.Set("Content-Type", "application/json")
                 geminiResp, err := client.Do(geminiReq)
                 if err != nil {
-                    fmt.Printf("Errore con Gemini: %v\n", err)
-                    geminiAnswer = "Errore: Gemini non ha risposto."
+                    fmt.Printf("Error with Gemini: %v\n", err)
+                    geminiAnswer = "Error: Gemini did not respond."
                 } else {
                     defer geminiResp.Body.Close()
                     var geminiResult struct {
@@ -728,10 +897,10 @@ func main() {
                         } `json:"candidates"`
                     }
                     if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
-                        fmt.Printf("Errore nel parsing di Gemini: %v\n", err)
-                        geminiAnswer = "Errore: Gemini non ha risposto correttamente."
+                        fmt.Printf("Error parsing Gemini response: %v\n", err)
+                        geminiAnswer = "Error: Gemini did not respond correctly."
                     } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                        geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+                        geminiAnswer = "Error: No valid response from Gemini."
                     } else {
                         geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
                     }
@@ -741,7 +910,7 @@ func main() {
 
         // 4. Costruisci rawResponses
         rawResponses := strings.Builder{}
-        rawResponses.WriteString("### Risposte originali\n\n")
+        rawResponses.WriteString("### Original Responses\n\n")
         rawResponses.WriteString("#### OpenAI\n")
         rawResponses.WriteString(openAIAnswer + "\n\n")
         rawResponses.WriteString("#### DeepSeek\n")
@@ -749,53 +918,52 @@ func main() {
         rawResponses.WriteString("#### Gemini\n")
         rawResponses.WriteString(geminiAnswer + "\n\n")
 
-        // 5. Sintesi con fallback (senza Grok finché non ci sono crediti)
+        // 5. Sintesi con DeepInfra, AIMLAPI, Hugging Face
         var synthesizedAnswer string
         // Escludi risposte con errori dal prompt di sintesi
         synthesisParts := []string{}
-        if !strings.Contains(openAIAnswer, "Errore") {
+        if !strings.Contains(openAIAnswer, "Error") {
             synthesisParts = append(synthesisParts, fmt.Sprintf("OpenAI: %s", openAIAnswer))
         }
-        if !strings.Contains(deepSeekAnswer, "Errore") {
+        if !strings.Contains(deepSeekAnswer, "Error") {
             synthesisParts = append(synthesisParts, fmt.Sprintf("DeepSeek: %s", deepSeekAnswer))
         }
-        if !strings.Contains(geminiAnswer, "Errore") {
+        if !strings.Contains(geminiAnswer, "Error") {
             synthesisParts = append(synthesisParts, fmt.Sprintf("Gemini: %s", geminiAnswer))
         }
 
         if len(synthesisParts) == 0 {
-            synthesizedAnswer = "Errore: nessuna risposta valida da sintetizzare."
+            synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
-            // Commentato il tentativo di sintesi con Grok finché non ci sono crediti
-            /*
+            // Crea il prompt per la sintesi
             synthesisPrompt := fmt.Sprintf(
                 "The user asked: '%s'. Synthesize the following answers into a single, comprehensive response that directly addresses the user's question. Integrate scientific, cultural, historical, and technological perspectives to reflect a global digital knowledge. Avoid bias, censorship, and propaganda. If the answers are off-topic or incomplete, provide a correct and complete response based on the question. Provide a clear and concise answer in %s style:\n\n%s",
                 question, style, strings.Join(synthesisParts, "\n\n"),
             )
-            synthesizedAnswer, err = getGrokResponse(grokKey, client, synthesisPrompt)
+            // Prova DeepInfra per la sintesi
+            synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
-                fmt.Printf("Errore nella sintesi con Grok: %v\n", err)
-                // Fallback: usa la prima risposta valida disponibile
-                if !strings.Contains(openAIAnswer, "Errore") {
-                    synthesizedAnswer = openAIAnswer + " (Nota: sintesi non disponibile, risposta di OpenAI.)"
-                } else if !strings.Contains(geminiAnswer, "Errore") {
-                    synthesizedAnswer = geminiAnswer + " (Nota: sintesi non disponibile, risposta di Gemini.)"
-                } else if !strings.Contains(deepSeekAnswer, "Errore") {
-                    synthesizedAnswer = deepSeekAnswer + " (Nota: sintesi non disponibile, risposta di DeepSeek.)"
-                } else {
-                    synthesizedAnswer = "Errore: non sono riuscito a sintetizzare le risposte."
+                fmt.Printf("Error synthesizing with DeepInfra: %v\n", err)
+                // Prova AIMLAPI come fallback
+                synthesizedAnswer, err = getAIMLAPIResponse(aimlKey, client, synthesisPrompt)
+                if err != nil {
+                    fmt.Printf("Error synthesizing with AIMLAPI: %v\n", err)
+                    // Prova Hugging Face come ulteriore fallback
+                    synthesizedAnswer, err = getHuggingFaceResponse(huggingFaceKey, client, synthesisPrompt)
+                    if err != nil {
+                        fmt.Printf("Error synthesizing with Hugging Face: %v\n", err)
+                        // Fallback finale: usa la prima risposta valida disponibile
+                        if !strings.Contains(openAIAnswer, "Error") {
+                            synthesizedAnswer = openAIAnswer + " (Note: Synthesis not available, using OpenAI response.)"
+                        } else if !strings.Contains(geminiAnswer, "Error") {
+                            synthesizedAnswer = geminiAnswer + " (Note: Synthesis not available, using Gemini response.)"
+                        } else if !strings.Contains(deepSeekAnswer, "Error") {
+                            synthesizedAnswer = deepSeekAnswer + " (Note: Synthesis not available, using DeepSeek response.)"
+                        } else {
+                            synthesizedAnswer = "Error: I couldn't synthesize the responses."
+                        }
+                    }
                 }
-            }
-            */
-            // Fallback temporaneo: usa la prima risposta valida disponibile
-            if !strings.Contains(openAIAnswer, "Errore") {
-                synthesizedAnswer = openAIAnswer + " (Nota: sintesi non disponibile, risposta di OpenAI.)"
-            } else if !strings.Contains(geminiAnswer, "Errore") {
-                synthesizedAnswer = geminiAnswer + " (Nota: sintesi non disponibile, risposta di Gemini.)"
-            } else if !strings.Contains(deepSeekAnswer, "Errore") {
-                synthesizedAnswer = deepSeekAnswer + " (Nota: sintesi non disponibile, risposta di DeepSeek.)"
-            } else {
-                synthesizedAnswer = "Errore: non sono riuscito a sintetizzare le risposte."
             }
         }
 
@@ -815,8 +983,8 @@ func main() {
 
         w.Header().Set("Content-Type", "application/json")
         if err := json.NewEncoder(w).Encode(response); err != nil {
-            fmt.Printf("Errore nell'invio della risposta JSON: %v\n", err)
-            http.Error(w, "Errore interno del server", http.StatusInternalServerError)
+            fmt.Printf("Error sending JSON response: %v\n", err)
+            http.Error(w, "Internal server error", http.StatusInternalServerError)
             return
         }
     })
