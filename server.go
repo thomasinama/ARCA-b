@@ -279,10 +279,13 @@ func main() {
         fmt.Println("HUGGINGFACE_API_KEY caricata correttamente")
     }
 
+    // Imposta la porta: usa la variabile d'ambiente PORT o default a 8080 per test locali
     port := os.Getenv("PORT")
     if port == "" {
-        fmt.Println("PORT non specificata, uso default :10000")
-        port = "80" //porta standard per HTTP
+        fmt.Println("PORT non specificata, uso default :8080")
+        port = "8080" // Default per test locali (modificato da 80 a 8080 per evitare problemi di permessi)
+    } else {
+        fmt.Printf("PORT specificata dall'ambiente: %s\n", port)
     }
 
     openAIClient := openai.NewClient(openAIKey)
@@ -346,7 +349,8 @@ func main() {
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Ricevuta richiesta su /health")
         w.WriteHeader(http.StatusOK)
-        fmt.Fprintf(w, "ARCA-b Chat AI is running on arcab-global-ai.org", port)
+        // Messaggio chiaro senza errori di formattazione
+        fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
     })
 
     // Serve la pagina HTML
