@@ -282,7 +282,7 @@ func main() {
     port := os.Getenv("PORT")
     if port == "" {
         fmt.Println("PORT non specificata, uso default :10000")
-        port = "10000" // Default per test locali
+        port = "80" //porta standard per HTTP
     }
 
     openAIClient := openai.NewClient(openAIKey)
@@ -346,7 +346,7 @@ func main() {
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Ricevuta richiesta su /health")
         w.WriteHeader(http.StatusOK)
-        fmt.Fprintf(w, "ARCA-b Chat AI is running on arcab-global-ai.org:%s", port)
+        fmt.Fprintf(w, "ARCA-b Chat AI is running on arcab-global-ai.org", port)
     })
 
     // Serve la pagina HTML
