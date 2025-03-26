@@ -19,19 +19,26 @@ type Session struct {
     History []openai.ChatCompletionMessage
 }
 
+type UserRequestTracker struct {
+    HourlyCount   int       // Contatore orario
+    LastResetHour time.Time // Ultimo reset del contatore orario
+    IsPremium     bool      // Flag per utenti premium
+}
+
 var (
-    sessions = make(map[string]*Session)
-    mutex    = &sync.Mutex{}
+    sessions         = make(map[string]*Session)
+    requestTrackers  = make(map[string]*UserRequestTracker)
+    premiumUsers     = make(map[string]bool) // Elenco di session_id di utenti premium
+    mutex            = &sync.Mutex{}
+    hourlyLimit      = 20                    // Limite orario per utenti non premium
+    nowPaymentsAPIKey = os.Getenv("NOWPAYMENTS_API_KEY") // Chiave API di NOWPayments
 )
 
 // detectLanguage fa una stima semplice della lingua della domanda
 func detectLanguage(text string) string {
     text = strings.ToLower(text)
-    // Parole comuni in italiano
     italianWords := []string{"il", "la", "di", "che", "per", "un", "una", "è", "sono", "cosa"}
-    // Parole comuni in spagnolo
     spanishWords := []string{"el", "la", "de", "que", "por", "un", "una", "es", "son", "qué"}
-    // Parole comuni in francese
     frenchWords := []string{"le", "la", "de", "que", "pour", "un", "une", "est", "sont", "quoi"}
 
     italianCount := 0
@@ -64,7 +71,6 @@ func detectLanguage(text string) string {
     } else if frenchCount > italianCount && frenchCount > spanishCount {
         return "French"
     }
-    // Default: inglese
     return "English"
 }
 
@@ -262,6 +268,57 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     return strings.TrimSpace(generatedText), nil
 }
 
+// createNOWPaymentsLink genera un link di pagamento con NOWPayments
+func createNOWPaymentsLink(sessionID string) (string, error) {
+    if nowPaymentsAPIKey == "" {
+        return "", fmt.Errorf("NOWPAYMENTS_API_KEY is not set")
+    }
+
+    payload := fmt.Sprintf(`{
+        "price_amount": 5,
+        "price_currency": "usd",
+        "pay_currency": "USDT",
+        "order_id": "%s",
+        "order_description": "ARCA-b Premium Upgrade",
+        "ipn_callback_url": "https://arcab-global-ai.org/payment-callback"
+    }`, sessionID)
+
+    req, err := http.NewRequest("POST", "https://api.nowpayments.io/v1/payment", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("error creating NOWPayments request: %v", err)
+    }
+
+    req.Header.Set("x-api-key", nowPaymentsAPIKey)
+    req.Header.Set("Content-Type", "application/json")
+
+    client := &http.Client{Timeout: 10 * time.Second}
+    resp, err := client.Do(req)
+    if err != nil {
+        return "", fmt.Errorf("error sending NOWPayments request: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading NOWPayments response: %v", err)
+    }
+
+    var result struct {
+        PaymentID   string `json:"payment_id"`
+        PaymentLink string `json:"invoice_url"`
+        Success     bool   `json:"success"`
+    }
+    if err := json.Unmarshal(body, &result); err != nil {
+        return "", fmt.Errorf("error parsing NOWPayments response: %v", err)
+    }
+
+    if !result.Success {
+        return "", fmt.Errorf("NOWPayments request failed: %s", string(body))
+    }
+
+    return result.PaymentLink, nil
+}
+
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -300,6 +357,11 @@ func main() {
         fmt.Println("Error: HUGGINGFACE_API_KEY is not set")
     } else {
         fmt.Println("HUGGINGFACE_API_KEY loaded successfully")
+    }
+    if nowPaymentsAPIKey == "" {
+        fmt.Println("Error: NOWPAYMENTS_API_KEY is not set")
+    } else {
+        fmt.Println("NOWPAYMENTS_API_KEY loaded successfully")
     }
 
     port := os.Getenv("PORT")
@@ -627,11 +689,11 @@ func main() {
             .button-container {
                 flex-direction: column;
                 gap: 10px;
-                align-items: center; /* Centra i pulsanti sull'asse verticale */
+                align-items: center;
             }
             .button-container button {
                 width: 100%;
-                max-width: 200px; /* Limita la larghezza per un aspetto migliore */
+                max-width: 200px;
             }
         }
     </style>
@@ -790,6 +852,19 @@ func main() {
 
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /donate")
+        sessionID, err := r.Cookie("session_id")
+        if err != nil {
+            http.Error(w, "Error: Session not found", http.StatusBadRequest)
+            return
+        }
+
+        // Genera il link di pagamento con NOWPayments
+        paymentLink, err := createNOWPaymentsLink(sessionID.Value)
+        if err != nil {
+            fmt.Printf("Error generating NOWPayments link: %v\n", err)
+            paymentLink = "#"
+        }
+
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
@@ -801,22 +876,56 @@ func main() {
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
         button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
         button:hover { background-color: #0056b3; }
-        .crypto-address { word-wrap: break-word; font-family: monospace; background-color: #f0f0f0; padding: 5px; border-radius: 5px; }
+        a.donate-button { display: inline-block; padding: 10px 20px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 10px; }
+        a.donate-button:hover { background-color: #218838; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
     <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you!</p>
+    <p>Donate to unlock unlimited interactions! Suggested donation: 5 USD (payable in USDT or BTC).</p>
    
-    <h2>Crypto Donations</h2>
-    <p><strong>USDT (Ethereum):</strong><br><span class="crypto-address">0x71ECB5C451ED648583722F5834fF6490D4570f7d</span></p>
-    <p><strong>USDT (TON):</strong><br><span class="crypto-address">UQDqZEeBAAheMYpj10KqS0-i_tbES8cbybx1Rp0ecNz8DlyAb</span></p>
-    <p><strong>Bitcoin (BTC):</strong><br><span class="crypto-address">38JkmWhTFYosecu45ewoheYMjJw68sHSj3</span></p>
-   
-    <p><small>Make sure to send USDT on the specified network (Ethereum ERC-20 or TON). Do not send other tokens or cryptocurrencies to these addresses.</small></p>
+    <h2>Donate with Crypto</h2>
+    <p>Click the button below to donate using USDT or Bitcoin via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
+    <a href="%s" class="donate-button" target="_blank">Donate Now</a>
+    
+    <p><small>If you encounter any issues, please contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a>.</small></p>
+    
     <a href="/"><button>Back to Chat</button></a>
 </body>
-</html>`)
+</html>`, paymentLink)
+    })
+
+    http.HandleFunc("/payment-callback", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+
+        var paymentData struct {
+            PaymentStatus string `json:"payment_status"`
+            OrderID       string `json:"order_id"`
+        }
+        if err := json.NewDecoder(r.Body).Decode(&paymentData); err != nil {
+            fmt.Printf("Error decoding payment callback: %v\n", err)
+            http.Error(w, "Invalid request", http.StatusBadRequest)
+            return
+        }
+
+        fmt.Printf("Received payment callback: Status=%s, OrderID=%s\n", paymentData.PaymentStatus, paymentData.OrderID)
+
+        if paymentData.PaymentStatus == "finished" || paymentData.PaymentStatus == "confirmed" {
+            sessionID := paymentData.OrderID
+            mutex.Lock()
+            premiumUsers[sessionID] = true
+            if tracker, exists := requestTrackers[sessionID]; exists {
+                tracker.IsPremium = true
+            }
+            mutex.Unlock()
+            fmt.Printf("User %s upgraded to premium\n", sessionID)
+        }
+
+        w.WriteHeader(http.StatusOK)
     })
 
     http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
@@ -842,6 +951,44 @@ func main() {
             http.Error(w, "Error: Session not found", http.StatusBadRequest)
             return
         }
+
+        // Controlla il limite orario
+        mutex.Lock()
+        tracker, exists := requestTrackers[sessionID.Value]
+        if !exists {
+            tracker = &UserRequestTracker{
+                HourlyCount:   0,
+                LastResetHour: time.Now(),
+                IsPremium:     premiumUsers[sessionID.Value],
+            }
+            requestTrackers[sessionID.Value] = tracker
+        }
+
+        // Controlla se l'utente è premium
+        if !tracker.IsPremium {
+            // Reset del contatore orario se è passata un'ora
+            if time.Since(tracker.LastResetHour) > time.Hour {
+                tracker.HourlyCount = 0
+                tracker.LastResetHour = time.Now()
+            }
+
+            // Incrementa il contatore
+            tracker.HourlyCount++
+            fmt.Printf("User %s: %d requests this hour\n", sessionID.Value, tracker.HourlyCount)
+
+            // Controlla se il limite è stato raggiunto
+            if tracker.HourlyCount > hourlyLimit {
+                mutex.Unlock()
+                response := map[string]string{
+                    "synthesized":  "You've reached the hourly limit of 20 questions. To unlock unlimited interactions, please consider donating! Visit the <a href=\"/donate\">Donate</a> page to learn more.",
+                    "rawResponses": "",
+                }
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(response)
+                return
+            }
+        }
+        mutex.Unlock()
 
         question := r.URL.Query().Get("question")
         if question == "" {
@@ -958,7 +1105,6 @@ func main() {
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
-            // Rileva la lingua della domanda
             detectedLang := detectLanguage(question)
             fmt.Printf("Detected language: %s\n", detectedLang)
 
