@@ -68,7 +68,7 @@ func detectLanguage(text string) string {
         return "Italian"
     } else if spanishCount > italianCount && spanishCount > frenchCount {
         return "Spanish"
-    } else if frenchCount > italianCount && frenchCount > spanishCount {
+    } else if frenchCount > italianCount && frenchCount > frenchCount {
         return "French"
     }
     return "English"
@@ -269,11 +269,20 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
 }
 
 // createNOWPaymentsLink genera un link di pagamento con NOWPayments
-func createNOWPaymentsLink(sessionID string) (string, error) {
+func createNOWPaymentsLink(sessionID string) (string, string, error) {
     if nowPaymentsAPIKey == "" {
-        return "", fmt.Errorf("NOWPAYMENTS_API_KEY is not set")
+        return "", "NOWPayments API key is not set. Please contact support.", fmt.Errorf("NOWPAYMENTS_API_KEY is not set")
     }
 
+    // Determina l'endpoint in base al Sandbox Mode
+    sandboxMode := os.Getenv("NOWPAYMENTS_SANDBOX") == "true"
+    apiEndpoint := "https://api.nowpayments.io/v1/payment"
+    if sandboxMode {
+        apiEndpoint = "https://api-sandbox.nowpayments.io/v1/payment"
+    }
+    fmt.Printf("Using NOWPayments endpoint: %s\n", apiEndpoint)
+
+    // Usa "USDT" come valuta di pagamento
     payload := fmt.Sprintf(`{
         "price_amount": 5,
         "price_currency": "usd",
@@ -283,9 +292,11 @@ func createNOWPaymentsLink(sessionID string) (string, error) {
         "ipn_callback_url": "https://arcab-global-ai.org/payment-callback"
     }`, sessionID)
 
-    req, err := http.NewRequest("POST", "https://api.nowpayments.io/v1/payment", strings.NewReader(payload))
+    fmt.Printf("Creating NOWPayments link for session %s with payload: %s\n", sessionID, payload)
+
+    req, err := http.NewRequest("POST", apiEndpoint, strings.NewReader(payload))
     if err != nil {
-        return "", fmt.Errorf("error creating NOWPayments request: %v", err)
+        return "", fmt.Sprintf("Error creating payment request: %v", err), fmt.Errorf("error creating NOWPayments request: %v", err)
     }
 
     req.Header.Set("x-api-key", nowPaymentsAPIKey)
@@ -294,29 +305,32 @@ func createNOWPaymentsLink(sessionID string) (string, error) {
     client := &http.Client{Timeout: 10 * time.Second}
     resp, err := client.Do(req)
     if err != nil {
-        return "", fmt.Errorf("error sending NOWPayments request: %v", err)
+        return "", fmt.Sprintf("Error sending payment request to NOWPayments: %v", err), fmt.Errorf("error sending NOWPayments request: %v", err)
     }
     defer resp.Body.Close()
 
     body, err := io.ReadAll(resp.Body)
     if err != nil {
-        return "", fmt.Errorf("error reading NOWPayments response: %v", err)
+        return "", fmt.Sprintf("Error reading NOWPayments response: %v", err), fmt.Errorf("error reading NOWPayments response: %v", err)
     }
+
+    fmt.Printf("NOWPayments response (status %d): %s\n", resp.StatusCode, string(body))
 
     var result struct {
         PaymentID   string `json:"payment_id"`
         PaymentLink string `json:"invoice_url"`
         Success     bool   `json:"success"`
+        Message     string `json:"message"`
     }
     if err := json.Unmarshal(body, &result); err != nil {
-        return "", fmt.Errorf("error parsing NOWPayments response: %v", err)
+        return "", fmt.Sprintf("Error parsing NOWPayments response: %v", err), fmt.Errorf("error parsing NOWPayments response: %v", err)
     }
 
     if !result.Success {
-        return "", fmt.Errorf("NOWPayments request failed: %s", string(body))
+        return "", fmt.Sprintf("NOWPayments request failed: %s", result.Message), fmt.Errorf("NOWPayments request failed: %s", string(body))
     }
 
-    return result.PaymentLink, nil
+    return result.PaymentLink, "", nil
 }
 
 func main() {
@@ -859,10 +873,17 @@ func main() {
         }
 
         // Genera il link di pagamento con NOWPayments
-        paymentLink, err := createNOWPaymentsLink(sessionID.Value)
+        paymentLink, errorMessage, err := createNOWPaymentsLink(sessionID.Value)
         if err != nil {
             fmt.Printf("Error generating NOWPayments link: %v\n", err)
-            paymentLink = "#"
+        }
+
+        // Usa if-else invece dell'operatore ternario
+        var errorMessageHTML string
+        if errorMessage != "" {
+            errorMessageHTML = fmt.Sprintf(`<p class="error-message">%s</p>`, errorMessage)
+        } else {
+            errorMessageHTML = ""
         }
 
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -878,22 +899,24 @@ func main() {
         button:hover { background-color: #0056b3; }
         a.donate-button { display: inline-block; padding: 10px 20px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 10px; }
         a.donate-button:hover { background-color: #218838; }
+        .error-message { color: red; margin: 10px 0; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
     <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you!</p>
-    <p>Donate to unlock unlimited interactions! Suggested donation: 5 USD (payable in USDT or BTC).</p>
+    <p>Donate to unlock unlimited interactions! Suggested donation: 5 USD (payable in USDT on Ethereum or BTC).</p>
    
     <h2>Donate with Crypto</h2>
-    <p>Click the button below to donate using USDT or Bitcoin via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
+    <p>Click the button below to donate using USDT (Ethereum) or Bitcoin via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
+    %s
     <a href="%s" class="donate-button" target="_blank">Donate Now</a>
     
     <p><small>If you encounter any issues, please contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a>.</small></p>
     
     <a href="/"><button>Back to Chat</button></a>
 </body>
-</html>`, paymentLink)
+</html>`, errorMessageHTML, paymentLink)
     })
 
     http.HandleFunc("/payment-callback", func(w http.ResponseWriter, r *http.Request) {
