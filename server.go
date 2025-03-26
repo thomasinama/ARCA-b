@@ -24,6 +24,50 @@ var (
     mutex    = &sync.Mutex{}
 )
 
+// detectLanguage fa una stima semplice della lingua della domanda
+func detectLanguage(text string) string {
+    text = strings.ToLower(text)
+    // Parole comuni in italiano
+    italianWords := []string{"il", "la", "di", "che", "per", "un", "una", "è", "sono", "cosa"}
+    // Parole comuni in spagnolo
+    spanishWords := []string{"el", "la", "de", "que", "por", "un", "una", "es", "son", "qué"}
+    // Parole comuni in francese
+    frenchWords := []string{"le", "la", "de", "que", "pour", "un", "une", "est", "sont", "quoi"}
+
+    italianCount := 0
+    spanishCount := 0
+    frenchCount := 0
+
+    words := strings.Fields(text)
+    for _, word := range words {
+        for _, itWord := range italianWords {
+            if word == itWord {
+                italianCount++
+            }
+        }
+        for _, esWord := range spanishWords {
+            if word == esWord {
+                spanishCount++
+            }
+        }
+        for _, frWord := range frenchWords {
+            if word == frWord {
+                frenchCount++
+            }
+        }
+    }
+
+    if italianCount > spanishCount && italianCount > frenchCount {
+        return "Italian"
+    } else if spanishCount > italianCount && spanishCount > frenchCount {
+        return "Spanish"
+    } else if frenchCount > italianCount && frenchCount > spanishCount {
+        return "French"
+    }
+    // Default: inglese
+    return "English"
+}
+
 // getDeepInfraResponse per sintetizzare le risposte usando l'API di DeepInfra
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
@@ -583,9 +627,11 @@ func main() {
             .button-container {
                 flex-direction: column;
                 gap: 10px;
+                align-items: center; /* Centra i pulsanti sull'asse verticale */
             }
             .button-container button {
                 width: 100%;
+                max-width: 200px; /* Limita la larghezza per un aspetto migliore */
             }
         }
     </style>
@@ -912,16 +958,20 @@ func main() {
         if len(synthesisParts) == 0 {
             synthesizedAnswer = "Error: No valid responses to synthesize."
         } else {
+            // Rileva la lingua della domanda
+            detectedLang := detectLanguage(question)
+            fmt.Printf("Detected language: %s\n", detectedLang)
+
             var synthesisPrompt string
             if style == "arca-b" {
                 synthesisPrompt = fmt.Sprintf(
-                    "The user asked: '%s'. Blend these responses into one clear answer that gets straight to the point. Pull the best from each, mixing in some science, culture, history, and tech, but keep it ARCA-b style: simple, casual, like explaining it to a friend over a beer. No fancy words, just cool stuff:\n\n%s",
-                    question, strings.Join(synthesisParts, "\n\n"),
+                    "The user asked: '%s'. The question is in %s. Blend these responses into one clear answer that gets straight to the point. Pull the best from each, mixing in some science, culture, history, and tech, but keep it ARCA-b style: simple, casual, like explaining it to a friend over a beer. No fancy words, just cool stuff. Respond strictly in %s:\n\n%s",
+                    question, detectedLang, detectedLang, strings.Join(synthesisParts, "\n\n"),
                 )
             } else {
                 synthesisPrompt = fmt.Sprintf(
-                    "The user asked: '%s'. Synthesize the following responses into one complete answer that directly addresses the user's question. Integrate the most interesting aspects of each response, combining scientific, cultural, historical, and technological perspectives to reflect global digital knowledge. Provide a clear, concise answer in an informal style, in the same language as the question:\n\n%s",
-                    question, strings.Join(synthesisParts, "\n\n"),
+                    "The user asked: '%s'. The question is in %s. Synthesize the following responses into one complete answer that directly addresses the user's question. Integrate the most interesting aspects of each response, combining scientific, cultural, historical, and technological perspectives to reflect global digital knowledge. Provide a clear, concise answer in an informal style. Respond strictly in %s:\n\n%s",
+                    question, detectedLang, detectedLang, strings.Join(synthesisParts, "\n\n"),
                 )
             }
 
