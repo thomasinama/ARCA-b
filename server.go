@@ -20,60 +20,20 @@ type Session struct {
 }
 
 type UserRequestTracker struct {
-    HourlyCount   int       // Contatore orario
-    LastResetHour time.Time // Ultimo reset del contatore orario
-    IsPremium     bool      // Flag per utenti premium
+    HourlyCount   int       // Hourly counter
+    LastResetHour time.Time // Last reset of the hourly counter
+    IsPremium     bool      // Flag for premium users
 }
 
 var (
     sessions        = make(map[string]*Session)
     requestTrackers = make(map[string]*UserRequestTracker)
-    premiumUsers    = make(map[string]bool) // Elenco di session_id di utenti premium
+    premiumUsers    = make(map[string]bool) // List of premium session_ids
     mutex           = &sync.Mutex{}
-    hourlyLimit     = 15                    // Limite orario per utenti non premium
+    hourlyLimit     = 15                    // Hourly limit for non-premium users
 )
 
-// detectLanguage fa una stima semplice della lingua della domanda
-func detectLanguage(text string) string {
-    text = strings.ToLower(text)
-    italianWords := []string{"il", "la", "di", "che", "per", "un", "una", "è", "sono", "cosa"}
-    spanishWords := []string{"el", "la", "de", "que", "por", "un", "una", "es", "son", "qué"}
-    frenchWords := []string{"le", "la", "de", "que", "pour", "un", "une", "est", "sont", "quoi"}
-
-    italianCount := 0
-    spanishCount := 0
-    frenchCount := 0
-
-    words := strings.Fields(text)
-    for _, word := range words {
-        for _, itWord := range italianWords {
-            if word == itWord {
-                italianCount++
-            }
-        }
-        for _, esWord := range spanishWords {
-            if word == esWord {
-                spanishCount++
-            }
-        }
-        for _, frWord := range frenchWords {
-            if word == frWord {
-                frenchCount++
-            }
-        }
-    }
-
-    if italianCount > spanishCount && italianCount > frenchCount {
-        return "Italian"
-    } else if spanishCount > italianCount && spanishCount > frenchCount {
-        return "Spanish"
-    } else if frenchCount > italianCount && frenchCount > frenchCount {
-        return "French"
-    }
-    return "English"
-}
-
-// getDeepInfraResponse per sintetizzare le risposte usando l'API di DeepInfra
+// getDeepInfraResponse to synthesize responses using the DeepInfra API
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
         return "", fmt.Errorf("DEEPINFRA_API_KEY is not set")
@@ -138,7 +98,7 @@ func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt strin
     return deepInfraResult.Choices[0].Message.Content, nil
 }
 
-// getAIMLAPIResponse per sintetizzare le risposte usando l'API di AIMLAPI
+// getAIMLAPIResponse to synthesize responses using the AIMLAPI API
 func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (string, error) {
     if aimlKey == "" {
         return "", fmt.Errorf("AIMLAPI_API_KEY is not set")
@@ -203,7 +163,7 @@ func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (str
     return aimlResult.Choices[0].Message.Content, nil
 }
 
-// getHuggingFaceResponse per sintetizzare le risposte usando l'API di Hugging Face
+// getHuggingFaceResponse to synthesize responses using the Hugging Face API
 func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (string, error) {
     if hfKey == "" {
         return "", fmt.Errorf("HUGGINGFACE_API_KEY is not set")
@@ -267,10 +227,10 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     return strings.TrimSpace(generatedText), nil
 }
 
-// getMistralResponse per sintetizzare le risposte usando l'API di Mistral
+// getMistralResponse to get responses using the Mistral API
 func getMistralResponse(mistralKey string, client *http.Client, prompt string) (string, error) {
     if mistralKey == "" {
-        return "", fmt.Errorf("MINSTRAL_API_KEY is not set")
+        return "", fmt.Errorf("MISTRAL_API_KEY is not set")
     }
 
     prompt = strings.ReplaceAll(prompt, "\n", " ")
@@ -339,7 +299,7 @@ func main() {
     deepInfraKey := os.Getenv("DEEPINFRA_API_KEY")
     aimlKey := os.Getenv("AIMLAPI_API_KEY")
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
-    mistralKey := os.Getenv("MINSTRAL_API_KEY")
+    mistralKey := os.Getenv("MISTRAL_API_KEY")
 
     fmt.Printf("Loading API keys...\n")
     if openAIKey == "" {
@@ -373,9 +333,9 @@ func main() {
         fmt.Println("HUGGINGFACE_API_KEY loaded successfully")
     }
     if mistralKey == "" {
-        fmt.Println("Error: MINSTRAL_API_KEY is not set")
+        fmt.Println("Error: MISTRAL_API_KEY is not set")
     } else {
-        fmt.Println("MINSTRAL_API_KEY loaded successfully")
+        fmt.Println("MISTRAL_API_KEY loaded successfully")
     }
 
     port := os.Getenv("PORT")
@@ -917,7 +877,6 @@ func main() {
             return
         }
 
-        // Controlla il limite orario
         mutex.Lock()
         tracker, exists := requestTrackers[sessionID.Value]
         if !exists {
@@ -929,23 +888,17 @@ func main() {
             requestTrackers[sessionID.Value] = tracker
         }
 
-        // Controlla se l'utente è premium
         if !tracker.IsPremium {
-            // Reset del contatore orario se è passata un'ora
             if time.Since(tracker.LastResetHour) > time.Hour {
                 tracker.HourlyCount = 0
                 tracker.LastResetHour = time.Now()
             }
-
-            // Incrementa il contatore
             tracker.HourlyCount++
             fmt.Printf("User %s: %d requests this hour\n", sessionID.Value, tracker.HourlyCount)
-
-            // Controlla se il limite è stato raggiunto
             if tracker.HourlyCount > hourlyLimit {
                 mutex.Unlock()
                 response := map[string]string{
-                    "synthesized":  "You've reached the hourly limit of 15 questions. Please consider supporting us with a donation to keep the project going! Visit the <a href=\"/donate\">Donate</a> page.",
+                    "synthesized":  "Hai raggiunto il limite orario di 15 domande. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.",
                     "rawResponses": "",
                 }
                 w.Header().Set("Content-Type", "application/json")
@@ -957,7 +910,7 @@ func main() {
 
         question := r.URL.Query().Get("question")
         if question == "" {
-            http.Error(w, "Error: Please specify a question with ?question=", http.StatusBadRequest)
+            http.Error(w, "Errore: Specifica una domanda con ?question=", http.StatusBadRequest)
             return
         }
         question = strings.TrimSpace(question)
@@ -987,7 +940,7 @@ func main() {
 
         var openAIAnswer string
         if openAIKey == "" {
-            openAIAnswer = "Error: OPENAI_API_KEY is not set."
+            openAIAnswer = "Errore: OPENAI_API_KEY non è impostata."
         } else {
             ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
             defer cancel()
@@ -999,8 +952,8 @@ func main() {
                 },
             )
             if err != nil {
-                fmt.Printf("Error with OpenAI: %v\n", err)
-                openAIAnswer = "Error: OpenAI did not respond."
+                fmt.Printf("Errore con OpenAI: %v\n", err)
+                openAIAnswer = "Errore: OpenAI non ha risposto."
             } else {
                 openAIAnswer = openAIResp.Choices[0].Message.Content
             }
@@ -1009,13 +962,13 @@ func main() {
         var deepSeekAnswer string
         deepSeekAnswer, err = getDeepSeekResponse(session.History)
         if err != nil {
-            fmt.Printf("Error with DeepSeek: %v\n", err)
-            deepSeekAnswer = "Error: DeepSeek did not respond."
+            fmt.Printf("Errore con DeepSeek: %v\n", err)
+            deepSeekAnswer = "Errore: DeepSeek non ha risposto."
         }
 
         var geminiAnswer string
         if geminiKey == "" {
-            geminiAnswer = "Error: GEMINI_API_KEY is not set."
+            geminiAnswer = "Errore: GEMINI_API_KEY non è impostata."
         } else {
             historyForGemini := ""
             for _, msg := range session.History {
@@ -1024,14 +977,14 @@ func main() {
             geminiReq, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                 strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
             if err != nil {
-                fmt.Printf("Error creating request to Gemini: %v\n", err)
-                geminiAnswer = "Error: Gemini did not respond."
+                fmt.Printf("Errore nella creazione della richiesta a Gemini: %v\n", err)
+                geminiAnswer = "Errore: Gemini non ha risposto."
             } else {
                 geminiReq.Header.Set("Content-Type", "application/json")
                 geminiResp, err := client.Do(geminiReq)
                 if err != nil {
-                    fmt.Printf("Error with Gemini: %v\n", err)
-                    geminiAnswer = "Error: Gemini did not respond."
+                    fmt.Printf("Errore con Gemini: %v\n", err)
+                    geminiAnswer = "Errore: Gemini non ha risposto."
                 } else {
                     defer geminiResp.Body.Close()
                     var geminiResult struct {
@@ -1044,10 +997,10 @@ func main() {
                         } `json:"candidates"`
                     }
                     if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
-                        fmt.Printf("Error parsing Gemini response: %v\n", err)
-                        geminiAnswer = "Error: Gemini did not respond correctly."
+                        fmt.Printf("Errore nel parsing della risposta di Gemini: %v\n", err)
+                        geminiAnswer = "Errore: Gemini non ha risposto correttamente."
                     } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                        geminiAnswer = "Error: No valid response from Gemini."
+                        geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
                     } else {
                         geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
                     }
@@ -1055,54 +1008,62 @@ func main() {
             }
         }
 
+        var mistralAnswer string
+        mistralAnswer, err = getMistralResponse(mistralKey, client, question)
+        if err != nil {
+            fmt.Printf("Errore con Mistral: %v\n", err)
+            mistralAnswer = "Errore: Mistral non ha risposto."
+        }
+
         rawResponses := strings.Builder{}
-        rawResponses.WriteString("### Original Responses\n\n")
+        rawResponses.WriteString("### Risposte Originali\n\n")
         synthesisParts := []string{
             fmt.Sprintf("OpenAI: %s", openAIAnswer),
             fmt.Sprintf("DeepSeek: %s", deepSeekAnswer),
             fmt.Sprintf("Gemini: %s", geminiAnswer),
+            fmt.Sprintf("Mistral: %s", mistralAnswer),
         }
         rawResponses.WriteString("#### OpenAI\n" + openAIAnswer + "\n\n")
         rawResponses.WriteString("#### DeepSeek\n" + deepSeekAnswer + "\n\n")
         rawResponses.WriteString("#### Gemini\n" + geminiAnswer + "\n\n")
+        rawResponses.WriteString("#### Mistral\n" + mistralAnswer + "\n\n")
 
         var synthesizedAnswer string
         if len(synthesisParts) == 0 {
-            synthesizedAnswer = "Error: No valid responses to synthesize."
+            synthesizedAnswer = "Errore: Nessuna risposta valida da sintetizzare."
         } else {
-            detectedLang := detectLanguage(question)
-            fmt.Printf("Detected language: %s\n", detectedLang)
-
             var synthesisPrompt string
             if style == "arca-b" {
                 synthesisPrompt = fmt.Sprintf(
-                    "The user asked: '%s'. The question is in %s. Blend these responses into one clear answer that gets straight to the point. Pull the best from each, mixing in some science, culture, history, and tech, but keep it ARCA-b style: simple, casual, like explaining it to a friend over a beer. No fancy words, just cool stuff. Respond strictly in %s:\n\n%s",
-                    question, detectedLang, detectedLang, strings.Join(synthesisParts, "\n\n"),
+                    "L'utente ha chiesto: '%s'. Mescola queste risposte in una sola chiara e diretta, prendendo il meglio da ciascuna, con un po' di scienza, cultura, storia e tech, ma in stile semplice e informale, come se lo spiegassi a un amico davanti a una birra. Niente paroloni, solo cose interessanti:\n\n%s",
+                    question, strings.Join(synthesisParts, "\n\n"),
                 )
             } else {
                 synthesisPrompt = fmt.Sprintf(
-                    "The user asked: '%s'. The question is in %s. Synthesize the following responses into one complete answer that directly addresses the user's question. Integrate the most interesting aspects of each response, combining scientific, cultural, historical, and technological perspectives to reflect global digital knowledge. Provide a clear, concise answer in an informal style. Respond strictly in %s:\n\n%s",
-                    question, detectedLang, detectedLang, strings.Join(synthesisParts, "\n\n"),
+                    "L'utente ha chiesto: '%s'. Sintetizza queste risposte in una risposta completa e diretta, integrando gli aspetti più interessanti di ciascuna, con prospettive scientifiche, culturali, storiche e tecnologiche, in stile informale e chiaro:\n\n%s",
+                    question, strings.Join(synthesisParts, "\n\n"),
                 )
             }
 
             synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
-                fmt.Printf("Error synthesizing with DeepInfra: %v\n", err)
+                fmt.Printf("Errore nella sintesi con DeepInfra: %v\n", err)
                 synthesizedAnswer, err = getAIMLAPIResponse(aimlKey, client, synthesisPrompt)
                 if err != nil {
-                    fmt.Printf("Error synthesizing with AIMLAPI: %v\n", err)
+                    fmt.Printf("Errore nella sintesi con AIMLAPI: %v\n", err)
                     synthesizedAnswer, err = getHuggingFaceResponse(huggingFaceKey, client, synthesisPrompt)
                     if err != nil {
-                        fmt.Printf("Error synthesizing with Hugging Face: %v\n", err)
-                        if !strings.Contains(openAIAnswer, "Error") {
-                            synthesizedAnswer = openAIAnswer + " (Note: Synthesis unavailable, using OpenAI response.)"
-                        } else if !strings.Contains(geminiAnswer, "Error") {
-                            synthesizedAnswer = geminiAnswer + " (Note: Synthesis unavailable, using Gemini response.)"
-                        } else if !strings.Contains(deepSeekAnswer, "Error") {
-                            synthesizedAnswer = deepSeekAnswer + " (Note: Synthesis unavailable, using DeepSeek response.)"
+                        fmt.Printf("Errore nella sintesi con Hugging Face: %v\n", err)
+                        if !strings.Contains(openAIAnswer, "Errore") {
+                            synthesizedAnswer = openAIAnswer + " (Nota: Sintesi non disponibile, uso la risposta di OpenAI.)"
+                        } else if !strings.Contains(geminiAnswer, "Errore") {
+                            synthesizedAnswer = geminiAnswer + " (Nota: Sintesi non disponibile, uso la risposta di Gemini.)"
+                        } else if !strings.Contains(deepSeekAnswer, "Errore") {
+                            synthesizedAnswer = deepSeekAnswer + " (Nota: Sintesi non disponibile, uso la risposta di DeepSeek.)"
+                        } else if !strings.Contains(mistralAnswer, "Errore") {
+                            synthesizedAnswer = mistralAnswer + " (Nota: Sintesi non disponibile, uso la risposta di Mistral.)"
                         } else {
-                            synthesizedAnswer = "Error: Couldn’t synthesize the responses."
+                            synthesizedAnswer = "Errore: Non sono riuscito a sintetizzare le risposte."
                         }
                     }
                 }
@@ -1113,7 +1074,7 @@ func main() {
             "synthesized":  synthesizedAnswer,
             "rawResponses": rawResponses.String(),
         }
-        fmt.Println("Sending JSON response:", response)
+        fmt.Println("Invio risposta JSON:", response)
 
         mutex.Lock()
         session.History = append(session.History, openai.ChatCompletionMessage{
@@ -1124,15 +1085,15 @@ func main() {
 
         w.Header().Set("Content-Type", "application/json")
         if err := json.NewEncoder(w).Encode(response); err != nil {
-            fmt.Printf("Error sending JSON response: %v\n", err)
-            http.Error(w, "Internal server error", http.StatusInternalServerError)
+            fmt.Printf("Errore nell'invio della risposta JSON: %v\n", err)
+            http.Error(w, "Errore interno del server", http.StatusInternalServerError)
             return
         }
     })
 
-    fmt.Printf("Server listening on port %s...\n", port)
+    fmt.Printf("Server in ascolto sulla porta %s...\n", port)
     if err := http.ListenAndServe(":"+port, nil); err != nil {
-        fmt.Printf("Error starting server: %v\n", err)
+        fmt.Printf("Errore nell'avvio del server: %v\n", err)
         os.Exit(1)
     }
 }
