@@ -7,7 +7,6 @@ import (
     "io"
     "net/http"
     "os"
-    "strconv"
     "strings"
     "sync"
     "time"
@@ -27,12 +26,11 @@ type UserRequestTracker struct {
 }
 
 var (
-    sessions         = make(map[string]*Session)
-    requestTrackers  = make(map[string]*UserRequestTracker)
-    premiumUsers     = make(map[string]bool) // Elenco di session_id di utenti premium
-    mutex            = &sync.Mutex{}
-    hourlyLimit      = 15                    // Limite orario per utenti non premium (abbassato da 20 a 15)
-    nowPaymentsAPIKey = os.Getenv("NOWPAYMENTS_API_KEY") // Chiave API di NOWPayments
+    sessions        = make(map[string]*Session)
+    requestTrackers = make(map[string]*UserRequestTracker)
+    premiumUsers    = make(map[string]bool) // Elenco di session_id di utenti premium
+    mutex           = &sync.Mutex{}
+    hourlyLimit     = 15                    // Limite orario per utenti non premium
 )
 
 // detectLanguage fa una stima semplice della lingua della domanda
@@ -334,83 +332,6 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
     return mistralResult.Choices[0].Message.Content, nil
 }
 
-// createNOWPaymentsLink genera un link di pagamento con NOWPayments
-func createNOWPaymentsLink(sessionID string, payCurrency string, amount float64) (string, string, error) {
-    if nowPaymentsAPIKey == "" {
-        return "", "NOWPayments API key is not set. Please contact support.", fmt.Errorf("NOWPAYMENTS_API_KEY is not set")
-    }
-
-    // Determina l'endpoint in base al Sandbox Mode
-    sandboxMode := os.Getenv("NOWPAYMENTS_SANDBOX") == "true"
-    apiEndpoint := "https://api.nowpayments.io/v1/payment"
-    if sandboxMode {
-        apiEndpoint = "https://api-sandbox.nowpayments.io/v1/payment"
-    }
-    fmt.Printf("Using NOWPayments endpoint: %s\n", apiEndpoint)
-
-    // Imposta price_currency e pay_currency
-    priceCurrency := "usdt" // Usa "usdt" come valuta di prezzo
-    if payCurrency != "USDT" && payCurrency != "BTC" {
-        payCurrency = "USDT" // Default a USDT (su Ethereum)
-    }
-
-    payload := fmt.Sprintf(`{
-        "price_amount": %.2f,
-        "price_currency": "%s",
-        "pay_currency": "%s",
-        "order_id": "%s",
-        "order_description": "ARCA-b Premium Upgrade",
-        "ipn_callback_url": "https://arcab-global-ai.org/payment-callback"
-    }`, amount, priceCurrency, payCurrency, sessionID)
-
-    fmt.Printf("Creating NOWPayments link for session %s with payload: %s\n", sessionID, payload)
-
-    req, err := http.NewRequest("POST", apiEndpoint, strings.NewReader(payload))
-    if err != nil {
-        return "", fmt.Sprintf("Error creating payment request: %v", err), fmt.Errorf("error creating NOWPayments request: %v", err)
-    }
-
-    req.Header.Set("x-api-key", nowPaymentsAPIKey)
-    req.Header.Set("Content-Type", "application/json")
-
-    client := &http.Client{Timeout: 10 * time.Second}
-    resp, err := client.Do(req)
-    if err != nil {
-        return "", fmt.Sprintf("Error sending payment request to NOWPayments: %v", err), fmt.Errorf("error sending NOWPayments request: %v", err)
-    }
-    defer resp.Body.Close()
-
-    body, err := io.ReadAll(resp.Body)
-    if err != nil {
-        return "", fmt.Sprintf("Error reading NOWPayments response: %v", err), fmt.Errorf("error reading NOWPayments response: %v", err)
-    }
-
-    fmt.Printf("NOWPayments response (status %d): %s\n", resp.StatusCode, string(body))
-
-    var result struct {
-        PaymentID   string `json:"payment_id"`
-        PaymentLink string `json:"invoice_url"`
-        Success     bool   `json:"success"`
-        Message     string `json:"message"`
-    }
-    if err := json.Unmarshal(body, &result); err != nil {
-        fmt.Printf("Error parsing NOWPayments response: %v\n", err)
-        return "", fmt.Sprintf("Error parsing NOWPayments response: %v", err), fmt.Errorf("error parsing NOWPayments response: %v", err)
-    }
-
-    fmt.Printf("NOWPayments result: PaymentID=%s, PaymentLink=%s, Success=%t, Message=%s\n", result.PaymentID, result.PaymentLink, result.Success, result.Message)
-
-    if result.Message != "" && !result.Success {
-        return "", fmt.Sprintf("NOWPayments request failed: %s", result.Message), fmt.Errorf("NOWPayments request failed: %s", string(body))
-    }
-
-    if result.PaymentID == "" || result.PaymentLink == "" {
-        return "", "NOWPayments response missing payment_id or invoice_url", fmt.Errorf("NOWPayments response missing payment_id or invoice_url: %s", string(body))
-    }
-
-    return result.PaymentLink, "", nil
-}
-
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -455,11 +376,6 @@ func main() {
         fmt.Println("Error: MINSTRAL_API_KEY is not set")
     } else {
         fmt.Println("MINSTRAL_API_KEY loaded successfully")
-    }
-    if nowPaymentsAPIKey == "" {
-        fmt.Println("Error: NOWPAYMENTS_API_KEY is not set")
-    } else {
-        fmt.Println("NOWPAYMENTS_API_KEY loaded successfully")
     }
 
     port := os.Getenv("PORT")
@@ -950,39 +866,6 @@ func main() {
 
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /donate")
-        sessionID, err := r.Cookie("session_id")
-        if err != nil {
-            http.Error(w, "Error: Session not found", http.StatusBadRequest)
-            return
-        }
-
-        // Determina la valuta di pagamento (default: USDT)
-        payCurrency := r.URL.Query().Get("currency")
-        if payCurrency == "" {
-            payCurrency = "USDT"
-        }
-
-        // Determina l'importo (default: 5 USDT)
-        amountStr := r.URL.Query().Get("amount")
-        amount, err := strconv.ParseFloat(amountStr, 64)
-        if err != nil || amount <= 0 {
-            amount = 5.0 // Default a 5 USDT
-        }
-
-        // Genera il link di pagamento con NOWPayments
-        paymentLink, errorMessage, err := createNOWPaymentsLink(sessionID.Value, payCurrency, amount)
-        if err != nil {
-            fmt.Printf("Error generating NOWPayments link: %v\n", err)
-        }
-
-        // Usa if-else invece dell'operatore ternario
-        var errorMessageHTML string
-        if errorMessage != "" {
-            errorMessageHTML = fmt.Sprintf(`<p class="error-message">%s</p>`, errorMessage)
-        } else {
-            errorMessageHTML = ""
-        }
-
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
@@ -994,101 +877,20 @@ func main() {
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
         button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
         button:hover { background-color: #0056b3; }
-        a.donate-button { display: inline-block; padding: 10px 20px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 10px; }
-        a.donate-button:hover { background-color: #218838; }
-        .error-message { color: red; margin: 10px 0; }
-        select, input[type="number"] { padding: 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 1em; margin: 5px; }
+        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
+        .crypto-address { margin: 10px 0; word-wrap: break-word; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
-    <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you!</p>
-    <p>Donate to unlock unlimited interactions! Enter the amount you wish to donate (minimum 1 USDT).</p>
-   
-    <h2>Donate with Crypto</h2>
-    <p>Select your preferred cryptocurrency and enter the amount to donate via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
-    <form id="donate-form">
-        <label for="amount">Amount (USDT):</label>
-        <input type="number" id="amount" name="amount" value="5" min="1" step="0.01" required>
-        <br><br>
-        <label for="currency">Choose currency:</label>
-        <select name="currency" id="currency">
-            <option value="USDT">USDT (Ethereum)</option>
-            <option value="BTC">Bitcoin (BTC)</option>
-        </select>
-        <br><br>
-        %s
-        <a href="%s" class="donate-button" target="_blank">Donate Now</a>
-    </form>
-    
-    <p><small>If you encounter any issues, please contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a>.</small></p>
-    
+    <p>Your donations help us improve the project and keep it free from censorship and propaganda. Thank you!</p>
+    <p>Please send your donation to one of the following cryptocurrency addresses:</p>
+    <div class="crypto-address"><strong>Bitcoin (BTC):</strong> <code>38JkmWhTFYosecu45ewoheYMjJw68sHSj3</code></div>
+    <div class="crypto-address"><strong>USDT (Ethereum):</strong> <code>0x71ECB5C451ED648583722F5834fF6490D4570f7d</code></div>
+    <p><small>After donating, contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a> with your session ID to unlock premium features.</small></p>
     <a href="/"><button>Back to Chat</button></a>
-
-    <script>
-        function updateDonationLink() {
-            const amount = document.getElementById("amount").value;
-            const currency = document.getElementById("currency").value;
-            if (amount < 1) {
-                alert("Please enter an amount of at least 1 USDT.");
-                return;
-            }
-            window.location.href = "/donate?currency=" + currency + "&amount=" + amount;
-        }
-
-        document.getElementById("currency").addEventListener("change", updateDonationLink);
-        document.getElementById("amount").addEventListener("input", updateDonationLink);
-    </script>
 </body>
-</html>`, errorMessageHTML, paymentLink)
-    })
-
-    http.HandleFunc("/payment-callback", func(w http.ResponseWriter, r *http.Request) {
-        if r.Method != http.MethodPost {
-            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-            return
-        }
-
-        var paymentData struct {
-            PaymentStatus string  `json:"payment_status"`
-            OrderID       string  `json:"order_id"`
-            PayAmount     float64 `json:"pay_amount"`
-            PayCurrency   string  `json:"pay_currency"`
-        }
-        if err := json.NewDecoder(r.Body).Decode(&paymentData); err != nil {
-            fmt.Printf("Error decoding payment callback: %v\n", err)
-            http.Error(w, "Invalid request", http.StatusBadRequest)
-            return
-        }
-
-        fmt.Printf("Received payment callback: Status=%s, OrderID=%s, PayAmount=%.2f %s\n", paymentData.PaymentStatus, paymentData.OrderID, paymentData.PayAmount, paymentData.PayCurrency)
-
-        if paymentData.PaymentStatus == "finished" || paymentData.PaymentStatus == "confirmed" {
-            // Converti l'importo pagato in USDT (se pagato in BTC)
-            amountInUSDT := paymentData.PayAmount
-            if paymentData.PayCurrency == "BTC" {
-                // Qui dovresti chiamare un'API per ottenere il tasso di cambio BTC -> USDT
-                // Per semplicità, assumiamo che NOWPayments abbia già convertito l'importo in USDT
-                // In un'implementazione reale, usa un'API come CoinGecko per il tasso di cambio
-            }
-
-            // Controlla se l'importo è sufficiente per l'upgrade a premium
-            minimumAmountForPremium := 5.0 // Minimo 5 USDT per diventare premium
-            if amountInUSDT >= minimumAmountForPremium {
-                sessionID := paymentData.OrderID
-                mutex.Lock()
-                premiumUsers[sessionID] = true
-                if tracker, exists := requestTrackers[sessionID]; exists {
-                    tracker.IsPremium = true
-                }
-                mutex.Unlock()
-                fmt.Printf("User %s upgraded to premium (amount: %.2f USDT)\n", sessionID, amountInUSDT)
-            } else {
-                fmt.Printf("User %s donated %.2f %s, but it's below the minimum for premium (%.2f USDT)\n", paymentData.OrderID, paymentData.PayAmount, paymentData.PayCurrency, minimumAmountForPremium)
-            }
-        }
-
-        w.WriteHeader(http.StatusOK)
+</html>`)
     })
 
     http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
@@ -1143,7 +945,7 @@ func main() {
             if tracker.HourlyCount > hourlyLimit {
                 mutex.Unlock()
                 response := map[string]string{
-                    "synthesized":  "You've reached the hourly limit of 15 questions. To unlock unlimited interactions, please consider donating! Visit the <a href=\"/donate\">Donate</a> page to learn more.",
+                    "synthesized":  "You've reached the hourly limit of 15 questions. Please consider supporting us with a donation to keep the project going! Visit the <a href=\"/donate\">Donate</a> page.",
                     "rawResponses": "",
                 }
                 w.Header().Set("Content-Type", "application/json")
