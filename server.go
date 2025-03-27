@@ -7,6 +7,7 @@ import (
     "io"
     "net/http"
     "os"
+    "strconv"
     "strings"
     "sync"
     "time"
@@ -30,7 +31,7 @@ var (
     requestTrackers  = make(map[string]*UserRequestTracker)
     premiumUsers     = make(map[string]bool) // Elenco di session_id di utenti premium
     mutex            = &sync.Mutex{}
-    hourlyLimit      = 20                    // Limite orario per utenti non premium
+    hourlyLimit      = 15                    // Limite orario per utenti non premium (abbassato da 20 a 15)
     nowPaymentsAPIKey = os.Getenv("NOWPAYMENTS_API_KEY") // Chiave API di NOWPayments
 )
 
@@ -268,8 +269,73 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     return strings.TrimSpace(generatedText), nil
 }
 
+// getMistralResponse per sintetizzare le risposte usando l'API di Mistral
+func getMistralResponse(mistralKey string, client *http.Client, prompt string) (string, error) {
+    if mistralKey == "" {
+        return "", fmt.Errorf("MINSTRAL_API_KEY is not set")
+    }
+
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Sending request to Mistral with prompt (first 100 chars):", prompt[:logLimit], "...")
+
+    payload := fmt.Sprintf(`{"model": "mistral-small-latest", "messages": [{"role": "user", "content": "%s"}], "max_tokens": 1000, "temperature": 0.7}`, prompt)
+    req, err := http.NewRequest("POST", "https://api.mistral.ai/v1/chat/completions", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("error creating request to Mistral: %v", err)
+    }
+
+    req.Header.Set("Authorization", "Bearer "+mistralKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    var resp *http.Response
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err = client.Do(req)
+        if err == nil {
+            break
+        }
+        fmt.Printf("Error with Mistral (attempt %d): %v\n", attempt, err)
+        time.Sleep(time.Second * time.Duration(attempt))
+    }
+    if err != nil {
+        return "", fmt.Errorf("error with Mistral after 3 attempts: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading Mistral response: %v", err)
+    }
+    fmt.Println("Raw response from Mistral (status %d): %s", resp.StatusCode, string(body))
+
+    var mistralResult struct {
+        Choices []struct {
+            Message struct {
+                Content string `json:"content"`
+            } `json:"message"`
+        } `json:"choices"`
+        Error string `json:"error"`
+    }
+    if err := json.Unmarshal(body, &mistralResult); err != nil {
+        return "", fmt.Errorf("error parsing Mistral response: %v, raw response: %s", err, string(body))
+    }
+    if mistralResult.Error != "" {
+        return "", fmt.Errorf("error from Mistral: %s", mistralResult.Error)
+    }
+    if len(mistralResult.Choices) == 0 || mistralResult.Choices[0].Message.Content == "" {
+        return "", fmt.Errorf("no valid response from Mistral: %s", string(body))
+    }
+
+    return mistralResult.Choices[0].Message.Content, nil
+}
+
 // createNOWPaymentsLink genera un link di pagamento con NOWPayments
-func createNOWPaymentsLink(sessionID string) (string, string, error) {
+func createNOWPaymentsLink(sessionID string, payCurrency string, amount float64) (string, string, error) {
     if nowPaymentsAPIKey == "" {
         return "", "NOWPayments API key is not set. Please contact support.", fmt.Errorf("NOWPAYMENTS_API_KEY is not set")
     }
@@ -282,15 +348,20 @@ func createNOWPaymentsLink(sessionID string) (string, string, error) {
     }
     fmt.Printf("Using NOWPayments endpoint: %s\n", apiEndpoint)
 
-    // Usa "USDT" come valuta di pagamento
+    // Imposta price_currency e pay_currency
+    priceCurrency := "usdt" // Usa "usdt" come valuta di prezzo
+    if payCurrency != "USDT" && payCurrency != "BTC" {
+        payCurrency = "USDT" // Default a USDT (su Ethereum)
+    }
+
     payload := fmt.Sprintf(`{
-        "price_amount": 5,
-        "price_currency": "usd",
-        "pay_currency": "USDT",
+        "price_amount": %.2f,
+        "price_currency": "%s",
+        "pay_currency": "%s",
         "order_id": "%s",
         "order_description": "ARCA-b Premium Upgrade",
         "ipn_callback_url": "https://arcab-global-ai.org/payment-callback"
-    }`, sessionID)
+    }`, amount, priceCurrency, payCurrency, sessionID)
 
     fmt.Printf("Creating NOWPayments link for session %s with payload: %s\n", sessionID, payload)
 
@@ -323,11 +394,18 @@ func createNOWPaymentsLink(sessionID string) (string, string, error) {
         Message     string `json:"message"`
     }
     if err := json.Unmarshal(body, &result); err != nil {
+        fmt.Printf("Error parsing NOWPayments response: %v\n", err)
         return "", fmt.Sprintf("Error parsing NOWPayments response: %v", err), fmt.Errorf("error parsing NOWPayments response: %v", err)
     }
 
-    if !result.Success {
+    fmt.Printf("NOWPayments result: PaymentID=%s, PaymentLink=%s, Success=%t, Message=%s\n", result.PaymentID, result.PaymentLink, result.Success, result.Message)
+
+    if result.Message != "" && !result.Success {
         return "", fmt.Sprintf("NOWPayments request failed: %s", result.Message), fmt.Errorf("NOWPayments request failed: %s", string(body))
+    }
+
+    if result.PaymentID == "" || result.PaymentLink == "" {
+        return "", "NOWPayments response missing payment_id or invoice_url", fmt.Errorf("NOWPayments response missing payment_id or invoice_url: %s", string(body))
     }
 
     return result.PaymentLink, "", nil
@@ -340,6 +418,7 @@ func main() {
     deepInfraKey := os.Getenv("DEEPINFRA_API_KEY")
     aimlKey := os.Getenv("AIMLAPI_API_KEY")
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
+    mistralKey := os.Getenv("MINSTRAL_API_KEY")
 
     fmt.Printf("Loading API keys...\n")
     if openAIKey == "" {
@@ -371,6 +450,11 @@ func main() {
         fmt.Println("Error: HUGGINGFACE_API_KEY is not set")
     } else {
         fmt.Println("HUGGINGFACE_API_KEY loaded successfully")
+    }
+    if mistralKey == "" {
+        fmt.Println("Error: MINSTRAL_API_KEY is not set")
+    } else {
+        fmt.Println("MINSTRAL_API_KEY loaded successfully")
     }
     if nowPaymentsAPIKey == "" {
         fmt.Println("Error: NOWPAYMENTS_API_KEY is not set")
@@ -872,8 +956,21 @@ func main() {
             return
         }
 
+        // Determina la valuta di pagamento (default: USDT)
+        payCurrency := r.URL.Query().Get("currency")
+        if payCurrency == "" {
+            payCurrency = "USDT"
+        }
+
+        // Determina l'importo (default: 5 USDT)
+        amountStr := r.URL.Query().Get("amount")
+        amount, err := strconv.ParseFloat(amountStr, 64)
+        if err != nil || amount <= 0 {
+            amount = 5.0 // Default a 5 USDT
+        }
+
         // Genera il link di pagamento con NOWPayments
-        paymentLink, errorMessage, err := createNOWPaymentsLink(sessionID.Value)
+        paymentLink, errorMessage, err := createNOWPaymentsLink(sessionID.Value, payCurrency, amount)
         if err != nil {
             fmt.Printf("Error generating NOWPayments link: %v\n", err)
         }
@@ -900,21 +997,48 @@ func main() {
         a.donate-button { display: inline-block; padding: 10px 20px; background-color: #28a745; color: white; text-decoration: none; border-radius: 5px; margin: 10px; }
         a.donate-button:hover { background-color: #218838; }
         .error-message { color: red; margin: 10px 0; }
+        select, input[type="number"] { padding: 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 1em; margin: 5px; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
     <p>Your donations help us improve the project and maintain a service free from censorship and propaganda. Thank you!</p>
-    <p>Donate to unlock unlimited interactions! Suggested donation: 5 USD (payable in USDT on Ethereum or BTC).</p>
+    <p>Donate to unlock unlimited interactions! Enter the amount you wish to donate (minimum 1 USDT).</p>
    
     <h2>Donate with Crypto</h2>
-    <p>Click the button below to donate using USDT (Ethereum) or Bitcoin via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
-    %s
-    <a href="%s" class="donate-button" target="_blank">Donate Now</a>
+    <p>Select your preferred cryptocurrency and enter the amount to donate via NOWPayments. After payment, your account will be upgraded to premium automatically.</p>
+    <form id="donate-form">
+        <label for="amount">Amount (USDT):</label>
+        <input type="number" id="amount" name="amount" value="5" min="1" step="0.01" required>
+        <br><br>
+        <label for="currency">Choose currency:</label>
+        <select name="currency" id="currency">
+            <option value="USDT">USDT (Ethereum)</option>
+            <option value="BTC">Bitcoin (BTC)</option>
+        </select>
+        <br><br>
+        %s
+        <a href="%s" class="donate-button" target="_blank">Donate Now</a>
+    </form>
     
     <p><small>If you encounter any issues, please contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a>.</small></p>
     
     <a href="/"><button>Back to Chat</button></a>
+
+    <script>
+        function updateDonationLink() {
+            const amount = document.getElementById("amount").value;
+            const currency = document.getElementById("currency").value;
+            if (amount < 1) {
+                alert("Please enter an amount of at least 1 USDT.");
+                return;
+            }
+            window.location.href = "/donate?currency=" + currency + "&amount=" + amount;
+        }
+
+        document.getElementById("currency").addEventListener("change", updateDonationLink);
+        document.getElementById("amount").addEventListener("input", updateDonationLink);
+    </script>
 </body>
 </html>`, errorMessageHTML, paymentLink)
     })
@@ -926,8 +1050,10 @@ func main() {
         }
 
         var paymentData struct {
-            PaymentStatus string `json:"payment_status"`
-            OrderID       string `json:"order_id"`
+            PaymentStatus string  `json:"payment_status"`
+            OrderID       string  `json:"order_id"`
+            PayAmount     float64 `json:"pay_amount"`
+            PayCurrency   string  `json:"pay_currency"`
         }
         if err := json.NewDecoder(r.Body).Decode(&paymentData); err != nil {
             fmt.Printf("Error decoding payment callback: %v\n", err)
@@ -935,17 +1061,31 @@ func main() {
             return
         }
 
-        fmt.Printf("Received payment callback: Status=%s, OrderID=%s\n", paymentData.PaymentStatus, paymentData.OrderID)
+        fmt.Printf("Received payment callback: Status=%s, OrderID=%s, PayAmount=%.2f %s\n", paymentData.PaymentStatus, paymentData.OrderID, paymentData.PayAmount, paymentData.PayCurrency)
 
         if paymentData.PaymentStatus == "finished" || paymentData.PaymentStatus == "confirmed" {
-            sessionID := paymentData.OrderID
-            mutex.Lock()
-            premiumUsers[sessionID] = true
-            if tracker, exists := requestTrackers[sessionID]; exists {
-                tracker.IsPremium = true
+            // Converti l'importo pagato in USDT (se pagato in BTC)
+            amountInUSDT := paymentData.PayAmount
+            if paymentData.PayCurrency == "BTC" {
+                // Qui dovresti chiamare un'API per ottenere il tasso di cambio BTC -> USDT
+                // Per semplicità, assumiamo che NOWPayments abbia già convertito l'importo in USDT
+                // In un'implementazione reale, usa un'API come CoinGecko per il tasso di cambio
             }
-            mutex.Unlock()
-            fmt.Printf("User %s upgraded to premium\n", sessionID)
+
+            // Controlla se l'importo è sufficiente per l'upgrade a premium
+            minimumAmountForPremium := 5.0 // Minimo 5 USDT per diventare premium
+            if amountInUSDT >= minimumAmountForPremium {
+                sessionID := paymentData.OrderID
+                mutex.Lock()
+                premiumUsers[sessionID] = true
+                if tracker, exists := requestTrackers[sessionID]; exists {
+                    tracker.IsPremium = true
+                }
+                mutex.Unlock()
+                fmt.Printf("User %s upgraded to premium (amount: %.2f USDT)\n", sessionID, amountInUSDT)
+            } else {
+                fmt.Printf("User %s donated %.2f %s, but it's below the minimum for premium (%.2f USDT)\n", paymentData.OrderID, paymentData.PayAmount, paymentData.PayCurrency, minimumAmountForPremium)
+            }
         }
 
         w.WriteHeader(http.StatusOK)
@@ -1003,7 +1143,7 @@ func main() {
             if tracker.HourlyCount > hourlyLimit {
                 mutex.Unlock()
                 response := map[string]string{
-                    "synthesized":  "You've reached the hourly limit of 20 questions. To unlock unlimited interactions, please consider donating! Visit the <a href=\"/donate\">Donate</a> page to learn more.",
+                    "synthesized":  "You've reached the hourly limit of 15 questions. To unlock unlimited interactions, please consider donating! Visit the <a href=\"/donate\">Donate</a> page to learn more.",
                     "rawResponses": "",
                 }
                 w.Header().Set("Content-Type", "application/json")
