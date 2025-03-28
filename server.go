@@ -20,17 +20,18 @@ type Session struct {
 }
 
 type UserRequestTracker struct {
-    HourlyCount   int       // Hourly counter
-    LastResetHour time.Time // Last reset of the hourly counter
-    IsPremium     bool      // Flag for premium users
+    HourlyCount   int       // Contatore orario
+    TotalCount    int       // Contatore totale delle richieste
+    LastResetHour time.Time // Ultimo reset del contatore orario
+    IsPremium     bool      // Flag per utenti premium
 }
 
 var (
     sessions        = make(map[string]*Session)
     requestTrackers = make(map[string]*UserRequestTracker)
-    premiumUsers    = make(map[string]bool) // List of premium session_ids
+    premiumUsers    = make(map[string]bool) // Lista di session_ids premium
     mutex           = &sync.Mutex{}
-    hourlyLimit     = 15                    // Hourly limit for non-premium users
+    hourlyLimit     = 15                    // Limite orario per utenti non premium
 )
 
 // getDeepInfraResponse to synthesize responses using the DeepInfra API
@@ -290,6 +291,31 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
     }
 
     return mistralResult.Choices[0].Message.Content, nil
+}
+
+// Funzione per rimuovere frasi introduttive indesiderate
+func cleanIntro(text string) string {
+    text = strings.TrimSpace(text)
+    intros := []string{
+        "Ecco la risposta",
+        "Ti rispondo direttamente",
+        "Questa è la sintesi",
+        "In poche parole",
+        "Ok, ecco qua",
+        "Senza giri di parole",
+        "Here’s the answer",
+        "Straight to the point",
+        "Here you go",
+    }
+    for _, intro := range intros {
+        if strings.HasPrefix(strings.ToLower(text), strings.ToLower(intro)) {
+            text = strings.TrimSpace(strings.TrimPrefix(text, intro))
+            if strings.HasPrefix(text, ":") || strings.HasPrefix(text, ",") {
+                text = strings.TrimSpace(text[1:])
+            }
+        }
+    }
+    return text
 }
 
 func main() {
@@ -644,6 +670,15 @@ func main() {
         body.dark .vision-text {
             color: #aaa;
         }
+        #stats-container {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 0.9em;
+            color: #666;
+        }
+        body.dark #stats-container {
+            color: #aaa;
+        }
         @media (max-width: 600px) {
             h1 {
                 font-size: 1.2em;
@@ -705,6 +740,9 @@ func main() {
         <button onclick="toggleTheme()">Dark/Light Theme</button>
         <a href="/donate"><button>Donate</button></a>
         <a href="mailto:arcab.founder@gmail.com"><button>Contact</button></a>
+    </div>
+    <div id="stats-container">
+        <p>Requests this hour: <span id="hourly-count">0</span> | Total requests: <span id="total-count">0</span></p>
     </div>
     <div id="chat-container">
         <div id="chat"></div>
@@ -875,6 +913,7 @@ func main() {
                 const rawResponses = answer[0].rawResponses || "";
                 const synthesizedAnswer = answer[0].synthesized || "Error: No synthesized response.";
                 addMessage(synthesizedAnswer, false, style, rawResponses);
+                updateStats(); // Aggiorna le statistiche dopo ogni messaggio
             } catch (error) {
                 console.error("Error during request:", error);
                 removeProcessingMessage();
@@ -891,9 +930,24 @@ func main() {
             });
         }
 
+        async function updateStats() {
+            try {
+                const response = await fetch("/stats", { credentials: "include" });
+                const stats = await response.json();
+                document.getElementById("hourly-count").textContent = stats.hourly_count;
+                document.getElementById("total-count").textContent = stats.total_count;
+            } catch (error) {
+                console.error("Error fetching stats:", error);
+            }
+        }
+
         input.addEventListener("keypress", function(e) {
             if (e.key === "Enter") sendMessage();
         });
+
+        // Aggiorna le statistiche all'avvio e ogni 30 secondi
+        updateStats();
+        setInterval(updateStats, 30000);
     </script>
 </body>
 </html>
@@ -945,6 +999,37 @@ func main() {
         w.WriteHeader(http.StatusOK)
     })
 
+    http.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+        sessionID, err := r.Cookie("session_id")
+        if err != nil {
+            http.Error(w, "Error: Session not found", http.StatusBadRequest)
+            return
+        }
+
+        mutex.Lock()
+        tracker, exists := requestTrackers[sessionID.Value]
+        if !exists {
+            tracker = &UserRequestTracker{
+                HourlyCount:   0,
+                TotalCount:    0,
+                LastResetHour: time.Now(),
+                IsPremium:     premiumUsers[sessionID.Value],
+            }
+            requestTrackers[sessionID.Value] = tracker
+        }
+        mutex.Unlock()
+
+        w.Header().Set("Content-Type", "application/json")
+        response := map[string]interface{}{
+            "hourly_count": tracker.HourlyCount,
+            "total_count":  tracker.TotalCount,
+            "is_premium":   tracker.IsPremium,
+            "limit_hourly": hourlyLimit,
+            "last_reset":   tracker.LastResetHour.Format(time.RFC3339),
+        }
+        json.NewEncoder(w).Encode(response)
+    })
+
     http.HandleFunc("/ask", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /ask")
         sessionID, err := r.Cookie("session_id")
@@ -958,29 +1043,34 @@ func main() {
         if !exists {
             tracker = &UserRequestTracker{
                 HourlyCount:   0,
+                TotalCount:    0,
                 LastResetHour: time.Now(),
                 IsPremium:     premiumUsers[sessionID.Value],
             }
             requestTrackers[sessionID.Value] = tracker
         }
 
-        if !tracker.IsPremium {
-            if time.Since(tracker.LastResetHour) > time.Hour {
-                tracker.HourlyCount = 0
-                tracker.LastResetHour = time.Now()
+        // Reset del contatore orario se è passata un'ora
+        if time.Since(tracker.LastResetHour) > time.Hour {
+            tracker.HourlyCount = 0
+            tracker.LastResetHour = time.Now()
+        }
+
+        // Incremento dei contatori
+        tracker.HourlyCount++
+        tracker.TotalCount++
+        fmt.Printf("User %s: %d requests this hour, %d total requests\n", sessionID.Value, tracker.HourlyCount, tracker.TotalCount)
+
+        // Controllo del limite orario per utenti non premium
+        if !tracker.IsPremium && tracker.HourlyCount > hourlyLimit {
+            mutex.Unlock()
+            response := map[string]string{
+                "synthesized":  fmt.Sprintf("Hai raggiunto il limite orario di %d domande. Totale richieste: %d. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.", hourlyLimit, tracker.TotalCount),
+                "rawResponses": "",
             }
-            tracker.HourlyCount++
-            fmt.Printf("User %s: %d requests this hour\n", sessionID.Value, tracker.HourlyCount)
-            if tracker.HourlyCount > hourlyLimit {
-                mutex.Unlock()
-                response := map[string]string{
-                    "synthesized":  "Hai raggiunto il limite orario di 15 domande. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.",
-                    "rawResponses": "",
-                }
-                w.Header().Set("Content-Type", "application/json")
-                json.NewEncoder(w).Encode(response)
-                return
-            }
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(response)
+            return
         }
         mutex.Unlock()
 
@@ -1123,7 +1213,7 @@ func main() {
             var synthesisPrompt string
             if style == "arca-b" {
                 synthesisPrompt = fmt.Sprintf(
-                    "Respond in %s: Take these responses and mix them into one, using the best from each, with a bit of science, culture, history, and tech, in a simple and informal style like you're talking to a friend over a beer. No introductions, straight to the point:\n\n%s",
+                    "Respond in %s: Blend these responses into one concise answer, picking the best parts from each, adding touches of science, culture, history, and tech. Use a casual, friendly tone like chatting over a beer. Start directly with the answer, no intros, no fluff:\n\n%s",
                     language, strings.Join(synthesisParts, "\n\n"),
                 )
             } else {
@@ -1156,6 +1246,8 @@ func main() {
                     }
                 }
             }
+            // Pulizia della risposta per rimuovere eventuali frasi introduttive residue
+            synthesizedAnswer = cleanIntro(synthesizedAnswer)
         }
 
         response := map[string]string{
