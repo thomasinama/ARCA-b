@@ -351,16 +351,23 @@ func main() {
         Timeout: 30 * time.Second,
     }
 
-    getDeepSeekResponse := func(messages []openai.ChatCompletionMessage) (string, error) {
+    getDeepSeekResponse := func(messages []openai.ChatCompletionMessage, language string) (string, error) {
         if deepSeekKey == "" {
             return "", fmt.Errorf("DEEPSEEK_API_KEY is not set")
         }
         var deepSeekMessages []map[string]string
-        for _, msg := range messages {
-            deepSeekMessages = append(deepSeekMessages, map[string]string{
-                "role":    msg.Role,
-                "content": msg.Content,
-            })
+        for i, msg := range messages {
+            if i == len(messages)-1 { // Ultimo messaggio (la domanda)
+                deepSeekMessages = append(deepSeekMessages, map[string]string{
+                    "role":    msg.Role,
+                    "content": fmt.Sprintf("Respond in %s: %s", language, msg.Content),
+                })
+            } else {
+                deepSeekMessages = append(deepSeekMessages, map[string]string{
+                    "role":    msg.Role,
+                    "content": msg.Content,
+                })
+            }
         }
         body, err := json.Marshal(map[string]interface{}{
             "model":    "deepseek-chat",
@@ -479,6 +486,7 @@ func main() {
             word-wrap: break-word;
             opacity: 0;
             animation: fadeIn 0.5s forwards;
+            position: relative;
         }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
@@ -580,20 +588,29 @@ func main() {
         body.dark button:hover {
             background-color: #0066cc;
         }
-        .typing {
+        .share-button {
+            padding: 5px 10px;
+            font-size: 0.8em;
+            margin-left: 10px;
+            background-color: #28a745;
+        }
+        .share-button:hover {
+            background-color: #218838;
+        }
+        body.dark .share-button {
+            background-color: #2ecc71;
+        }
+        body.dark .share-button:hover {
+            background-color: #27ae60;
+        }
+        .processing {
             font-style: italic;
-            color: #888;
-            background-color: #f0f0f0;
-            animation: pulse 1s infinite;
+            color: #666;
+            margin: 5px 0;
+            text-align: left;
         }
-        body.dark .typing {
-            background-color: #555;
-            color: #ccc;
-        }
-        @keyframes pulse {
-            0% { opacity: 0.6; }
-            50% { opacity: 1; }
-            100% { opacity: 0.6; }
+        body.dark .processing {
+            color: #aaa;
         }
         .details {
             display: none;
@@ -669,6 +686,10 @@ func main() {
                 width: 100%;
                 max-width: 200px;
             }
+            .share-button {
+                margin-left: 0;
+                margin-top: 5px;
+            }
         }
     </style>
 </head>
@@ -694,6 +715,11 @@ func main() {
                 <option value="grok">Informal response style</option>
                 <option value="arca-b">ARCA-b response style</option>
             </select>
+            <select id="language-select">
+                <option value="Italiano">Italiano</option>
+                <option value="English">English</option>
+                <option value="Deutsch">Deutsch</option>
+            </select>
         </div>
         <div class="input-container">
             <input id="input" type="text" placeholder="Write your question...">
@@ -705,6 +731,7 @@ func main() {
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
         const styleSelect = document.getElementById("style-select");
+        const languageSelect = document.getElementById("language-select");
 
         if (localStorage.getItem("theme") === "dark") {
             document.body.classList.add("dark");
@@ -713,6 +740,11 @@ func main() {
             styleSelect.value = "arca-b";
         } else {
             styleSelect.value = "grok";
+        }
+        if (localStorage.getItem("language")) {
+            languageSelect.value = localStorage.getItem("language");
+        } else {
+            languageSelect.value = "Italiano"; // Default
         }
 
         function toggleTheme() {
@@ -732,6 +764,14 @@ func main() {
             div.innerHTML = messageText.replace(/\n/g, "<br>");
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
+
+            if (!isUser) {
+                const shareButton = document.createElement("button");
+                shareButton.textContent = "Share";
+                shareButton.className = "share-button";
+                shareButton.onclick = () => shareResponse(getLastUserQuestion(), text);
+                div.appendChild(shareButton);
+            }
 
             if (!isUser && rawResponses && rawResponses.trim() !== "") {
                 console.log("Raw responses received:", rawResponses);
@@ -761,20 +801,54 @@ func main() {
             chat.scrollTop = chat.scrollHeight;
         }
 
-        function showTypingIndicator() {
+        function getLastUserQuestion() {
+            const messages = chat.getElementsByClassName("message user");
+            if (messages.length > 0) {
+                const lastMessage = messages[messages.length - 1];
+                return lastMessage.textContent.replace("You: ", "").trim();
+            }
+            return "No question found";
+        }
+
+        function shareResponse(question, answer) {
+            const shareText = "Question: " + question + "\nAnswer from ARCA-b Chat AI: " + answer + "\n\nTry it yourself at: https://arcab-global-ai.org";
+            if (navigator.share) {
+                navigator.share({
+                    title: "ARCA-b Chat AI Response",
+                    text: shareText,
+                    url: "https://arcab-global-ai.org",
+                }).catch(err => {
+                    console.error("Error sharing:", err);
+                    fallbackCopyToClipboard(shareText);
+                });
+            } else {
+                fallbackCopyToClipboard(shareText);
+            }
+        }
+
+        function fallbackCopyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert("Response copied to clipboard!");
+            }).catch(err => {
+                console.error("Failed to copy to clipboard:", err);
+                alert("Failed to copy to clipboard. Please copy manually:\n\n" + text);
+            });
+        }
+
+        function showProcessingMessage() {
             const div = document.createElement("div");
-            div.id = "typing-indicator";
-            div.className = "message bot typing";
-            div.textContent = "ARCA-b is typing...";
+            div.id = "processing-message";
+            div.className = "processing";
+            div.textContent = "Response being processed";
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
             return div;
         }
 
-        function removeTypingIndicator() {
-            const typingIndicator = document.getElementById("typing-indicator");
-            if (typingIndicator) {
-                typingIndicator.remove();
+        function removeProcessingMessage() {
+            const processingMessage = document.getElementById("processing-message");
+            if (processingMessage) {
+                processingMessage.remove();
             }
         }
 
@@ -785,23 +859,25 @@ func main() {
             input.value = "";
 
             const style = styleSelect.value;
+            const language = languageSelect.value;
             localStorage.setItem("style", style);
+            localStorage.setItem("language", language);
 
-            const typingIndicator = showTypingIndicator();
+            showProcessingMessage();
             try {
                 const minDisplayTime = new Promise(resolve => setTimeout(resolve, 1000));
-                const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style, {
+                const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style + "&language=" + encodeURIComponent(language), {
                     credentials: "include"
                 });
                 const answer = await Promise.all([response.json(), minDisplayTime]);
                 console.log("Response received from /ask:", answer[0]);
-                removeTypingIndicator();
+                removeProcessingMessage();
                 const rawResponses = answer[0].rawResponses || "";
                 const synthesizedAnswer = answer[0].synthesized || "Error: No synthesized response.";
                 addMessage(synthesizedAnswer, false, style, rawResponses);
             } catch (error) {
                 console.error("Error during request:", error);
-                removeTypingIndicator();
+                removeProcessingMessage();
                 addMessage("Error: I couldn't get a response.", false, style);
             }
         }
@@ -925,6 +1001,11 @@ func main() {
             style = "arca-b"
         }
 
+        language := r.URL.Query().Get("language")
+        if language == "" {
+            language = "Italiano" // Default
+        }
+
         mutex.Lock()
         session, exists := sessions[sessionID.Value]
         if !exists {
@@ -940,51 +1021,57 @@ func main() {
 
         var openAIAnswer string
         if openAIKey == "" {
-            openAIAnswer = "Errore: OPENAI_API_KEY non è impostata."
+            openAIAnswer = fmt.Sprintf("Errore: OPENAI_API_KEY non è impostata. (in %s)", language)
         } else {
             ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
             defer cancel()
+            messagesWithLang := append([]openai.ChatCompletionMessage{}, session.History...)
+            messagesWithLang[len(messagesWithLang)-1].Content = fmt.Sprintf("Respond in %s: %s", language, question)
             openAIResp, err := openAIClient.CreateChatCompletion(
                 ctx,
                 openai.ChatCompletionRequest{
                     Model:    openai.GPT3Dot5Turbo,
-                    Messages: session.History,
+                    Messages: messagesWithLang,
                 },
             )
             if err != nil {
                 fmt.Printf("Errore con OpenAI: %v\n", err)
-                openAIAnswer = "Errore: OpenAI non ha risposto."
+                openAIAnswer = fmt.Sprintf("Errore: OpenAI non ha risposto. (in %s)", language)
             } else {
                 openAIAnswer = openAIResp.Choices[0].Message.Content
             }
         }
 
         var deepSeekAnswer string
-        deepSeekAnswer, err = getDeepSeekResponse(session.History)
+        deepSeekAnswer, err = getDeepSeekResponse(session.History, language)
         if err != nil {
             fmt.Printf("Errore con DeepSeek: %v\n", err)
-            deepSeekAnswer = "Errore: DeepSeek non ha risposto."
+            deepSeekAnswer = fmt.Sprintf("Errore: DeepSeek non ha risposto. (in %s)", language)
         }
 
         var geminiAnswer string
         if geminiKey == "" {
-            geminiAnswer = "Errore: GEMINI_API_KEY non è impostata."
+            geminiAnswer = fmt.Sprintf("Errore: GEMINI_API_KEY non è impostata. (in %s)", language)
         } else {
             historyForGemini := ""
-            for _, msg := range session.History {
-                historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+            for i, msg := range session.History {
+                if i == len(session.History)-1 {
+                    historyForGemini += fmt.Sprintf("%s: Respond in %s: %s\n", msg.Role, language, msg.Content)
+                } else {
+                    historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+                }
             }
             geminiReq, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                 strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
             if err != nil {
                 fmt.Printf("Errore nella creazione della richiesta a Gemini: %v\n", err)
-                geminiAnswer = "Errore: Gemini non ha risposto."
+                geminiAnswer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
             } else {
                 geminiReq.Header.Set("Content-Type", "application/json")
                 geminiResp, err := client.Do(geminiReq)
                 if err != nil {
                     fmt.Printf("Errore con Gemini: %v\n", err)
-                    geminiAnswer = "Errore: Gemini non ha risposto."
+                    geminiAnswer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
                 } else {
                     defer geminiResp.Body.Close()
                     var geminiResult struct {
@@ -998,9 +1085,9 @@ func main() {
                     }
                     if err := json.NewDecoder(geminiResp.Body).Decode(&geminiResult); err != nil {
                         fmt.Printf("Errore nel parsing della risposta di Gemini: %v\n", err)
-                        geminiAnswer = "Errore: Gemini non ha risposto correttamente."
+                        geminiAnswer = fmt.Sprintf("Errore: Gemini non ha risposto correttamente. (in %s)", language)
                     } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                        geminiAnswer = "Errore: Nessuna risposta valida da Gemini."
+                        geminiAnswer = fmt.Sprintf("Errore: Nessuna risposta valida da Gemini. (in %s)", language)
                     } else {
                         geminiAnswer = geminiResult.Candidates[0].Content.Parts[0].Text
                     }
@@ -1009,14 +1096,15 @@ func main() {
         }
 
         var mistralAnswer string
-        mistralAnswer, err = getMistralResponse(mistralKey, client, question)
+        mistralPrompt := fmt.Sprintf("Respond in %s: %s", language, question)
+        mistralAnswer, err = getMistralResponse(mistralKey, client, mistralPrompt)
         if err != nil {
             fmt.Printf("Errore con Mistral: %v\n", err)
-            mistralAnswer = "Errore: Mistral non ha risposto."
+            mistralAnswer = fmt.Sprintf("Errore: Mistral non ha risposto. (in %s)", language)
         }
 
         rawResponses := strings.Builder{}
-        rawResponses.WriteString("### Risposte Originali\n\n")
+        rawResponses.WriteString("### Original Responses\n\n")
         synthesisParts := []string{
             fmt.Sprintf("OpenAI: %s", openAIAnswer),
             fmt.Sprintf("DeepSeek: %s", deepSeekAnswer),
@@ -1030,18 +1118,18 @@ func main() {
 
         var synthesizedAnswer string
         if len(synthesisParts) == 0 {
-            synthesizedAnswer = "Errore: Nessuna risposta valida da sintetizzare."
+            synthesizedAnswer = fmt.Sprintf("Error: No valid responses to synthesize. (in %s)", language)
         } else {
             var synthesisPrompt string
             if style == "arca-b" {
                 synthesisPrompt = fmt.Sprintf(
-                    "L'utente ha chiesto: '%s'. Mescola queste risposte in una sola chiara e diretta, prendendo il meglio da ciascuna, con un po' di scienza, cultura, storia e tech, ma in stile semplice e informale, come se lo spiegassi a un amico davanti a una birra. Niente paroloni, solo cose interessanti:\n\n%s",
-                    question, strings.Join(synthesisParts, "\n\n"),
+                    "Respond in %s: Take these responses and mix them into one, using the best from each, with a bit of science, culture, history, and tech, in a simple and informal style like you're talking to a friend over a beer. No introductions, straight to the point:\n\n%s",
+                    language, strings.Join(synthesisParts, "\n\n"),
                 )
             } else {
                 synthesisPrompt = fmt.Sprintf(
-                    "L'utente ha chiesto: '%s'. Sintetizza queste risposte in una risposta completa e diretta, integrando gli aspetti più interessanti di ciascuna, con prospettive scientifiche, culturali, storiche e tecnologiche, in stile informale e chiaro:\n\n%s",
-                    question, strings.Join(synthesisParts, "\n\n"),
+                    "Respond in %s: The user asked: '%s'. Synthesize these responses into a complete and direct answer, blending the most interesting aspects of each, with scientific, cultural, historical, and technological perspectives, in an informal and clear style:\n\n%s",
+                    language, question, strings.Join(synthesisParts, "\n\n"),
                 )
             }
 
@@ -1055,15 +1143,15 @@ func main() {
                     if err != nil {
                         fmt.Printf("Errore nella sintesi con Hugging Face: %v\n", err)
                         if !strings.Contains(openAIAnswer, "Errore") {
-                            synthesizedAnswer = openAIAnswer + " (Nota: Sintesi non disponibile, uso la risposta di OpenAI.)"
+                            synthesizedAnswer = openAIAnswer + fmt.Sprintf(" (Note: Synthesis not available, using OpenAI response, in %s)", language)
                         } else if !strings.Contains(geminiAnswer, "Errore") {
-                            synthesizedAnswer = geminiAnswer + " (Nota: Sintesi non disponibile, uso la risposta di Gemini.)"
+                            synthesizedAnswer = geminiAnswer + fmt.Sprintf(" (Note: Synthesis not available, using Gemini response, in %s)", language)
                         } else if !strings.Contains(deepSeekAnswer, "Errore") {
-                            synthesizedAnswer = deepSeekAnswer + " (Nota: Sintesi non disponibile, uso la risposta di DeepSeek.)"
+                            synthesizedAnswer = deepSeekAnswer + fmt.Sprintf(" (Note: Synthesis not available, using DeepSeek response, in %s)", language)
                         } else if !strings.Contains(mistralAnswer, "Errore") {
-                            synthesizedAnswer = mistralAnswer + " (Nota: Sintesi non disponibile, uso la risposta di Mistral.)"
+                            synthesizedAnswer = mistralAnswer + fmt.Sprintf(" (Note: Synthesis not available, using Mistral response, in %s)", language)
                         } else {
-                            synthesizedAnswer = "Errore: Non sono riuscito a sintetizzare le risposte."
+                            synthesizedAnswer = fmt.Sprintf("Errore: Non sono riuscito a sintetizzare le risposte. (in %s)", language)
                         }
                     }
                 }
