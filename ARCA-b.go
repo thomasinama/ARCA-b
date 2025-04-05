@@ -5,6 +5,7 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "math"  // Aggiunto per usare math.Sqrt
     "net/http"
     "os"
     "strings"
@@ -291,7 +292,7 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
 
     return mistralResult.Choices[0].Message.Content, nil
 }
-
+// getDeepSeekResponse to get responses using the DeepSeek API
 func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []openai.ChatCompletionMessage, language string) (string, error) {
     if deepSeekKey == "" {
         return "", fmt.Errorf("DEEPSEEK_API_KEY is not set")
@@ -350,6 +351,209 @@ func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []ope
     }
     return "", fmt.Errorf("no valid response from DeepSeek: %s", string(bodyResp))
 }
+
+// getAnthropicResponse to synthesize responses using the Anthropic API
+func getAnthropicResponse(anthropicKey string, client *http.Client, prompt string) (string, error) {
+    if anthropicKey == "" {
+        return "", fmt.Errorf("ANTHROPIC_API_KEY is not set")
+    }
+
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Sending request to Anthropic with prompt (first 100 chars):", prompt[:logLimit], "...")
+
+    payload := fmt.Sprintf(`{"model": "claude-3-sonnet-20240229", "max_tokens": 1000, "temperature": 0.7, "messages": [{"role": "user", "content": "%s"}]}`, prompt)
+    req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("error creating request to Anthropic: %v", err)
+    }
+
+    req.Header.Set("x-api-key", anthropicKey)
+    req.Header.Set("anthropic-version", "2023-06-01")
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    resp, err := client.Do(req)
+    if err != nil {
+        return "", fmt.Errorf("error with Anthropic request: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading Anthropic response: %v", err)
+    }
+    fmt.Println("Raw response from Anthropic (status %d): %s", resp.StatusCode, string(body))
+
+    var anthropicResult struct {
+        Content []struct {
+            Text string `json:"text"`
+        } `json:"content"`
+        Error struct {
+            Type    string `json:"type"`
+            Message string `json:"message"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(body, &anthropicResult); err != nil {
+        return "", fmt.Errorf("error parsing Anthropic response: %v, raw response: %s", err, string(body))
+    }
+    if anthropicResult.Error.Message != "" {
+        return "", fmt.Errorf("error from Anthropic API (type: %s): %s", anthropicResult.Error.Type, anthropicResult.Error.Message)
+    }
+    if len(anthropicResult.Content) == 0 || anthropicResult.Content[0].Text == "" {
+        return "", fmt.Errorf("no valid response from Anthropic: %s", string(body))
+    }
+
+    return anthropicResult.Content[0].Text, nil
+}
+
+// getCohereResponse to synthesize responses using the Cohere API
+func getCohereResponse(cohereKey string, client *http.Client, prompt string) (string, error) {
+    if cohereKey == "" {
+        return "", fmt.Errorf("COHERE_API_KEY is not set")
+    }
+
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Sending request to Cohere with prompt (first 100 chars):", prompt[:logLimit], "...")
+
+    fullPrompt := fmt.Sprintf("Rispondi esclusivamente in italiano. Non usare altre lingue, nemmeno per frasi brevi o parole singole. Se non puoi rispondere in italiano, restituisci un messaggio di errore in italiano. Domanda: %s", prompt)
+    payload := fmt.Sprintf(`{"model": "command", "prompt": "%s", "max_tokens": 1000, "temperature": 0.7}`, fullPrompt)
+    req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/generate", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("error creating request to Cohere: %v", err)
+    }
+
+    req.Header.Set("Authorization", "Bearer "+cohereKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    var resp *http.Response
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err = client.Do(req)
+        if err == nil {
+            break
+        }
+        fmt.Printf("Error with Cohere (attempt %d): %v\n", attempt, err)
+        time.Sleep(time.Second * time.Duration(attempt))
+    }
+    if err != nil {
+        return "", fmt.Errorf("error with Cohere after 3 attempts: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading Cohere response: %v", err)
+    }
+    fmt.Println("Raw response from Cohere (status %d): %s", resp.StatusCode, string(body))
+
+    var cohereResult struct {
+        Generations []struct {
+            Text string `json:"text"`
+        } `json:"generations"`
+        Error struct {
+            Message string `json:"message"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(body, &cohereResult); err != nil {
+        return "", fmt.Errorf("error parsing Cohere response: %v, raw response: %s", err, string(body))
+    }
+    if cohereResult.Error.Message != "" {
+        return "", fmt.Errorf("error from Cohere API: %s", cohereResult.Error.Message)
+    }
+    if len(cohereResult.Generations) == 0 || cohereResult.Generations[0].Text == "" {
+        return "", fmt.Errorf("no valid response from Cohere: %s", string(body))
+    }
+
+    responseText := cohereResult.Generations[0].Text
+    // Controllo base per verificare se la risposta contiene parole in inglese
+    if strings.Contains(strings.ToLower(responseText), " trout ") || strings.Contains(strings.ToLower(responseText), " fish ") {
+        return "", fmt.Errorf("Cohere ha risposto in inglese nonostante l'istruzione: %s", responseText)
+    }
+
+    return responseText, nil
+}
+
+// getCohereEmbedding to get embeddings for text using the Cohere API
+func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]float64, error) {
+    if cohereKey == "" {
+        return nil, fmt.Errorf("COHERE_API_KEY is not set")
+    }
+
+    text = strings.ReplaceAll(text, "\n", " ")
+    text = strings.ReplaceAll(text, "\"", "\\\"")
+    payload := fmt.Sprintf(`{"texts": ["%s"], "model": "embed-multilingual-v3.0", "input_type": "search_document"}`, text)
+    req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/embed", strings.NewReader(payload))
+    if err != nil {
+        return nil, fmt.Errorf("error creating request to Cohere Embed: %v", err)
+    }
+
+    req.Header.Set("Authorization", "Bearer "+cohereKey)
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    resp, err := client.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("error with Cohere Embed request: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return nil, fmt.Errorf("error reading Cohere Embed response: %v", err)
+    }
+    fmt.Println("Raw response from Cohere Embed (status %d): %s", resp.StatusCode, string(body))
+
+    var embedResult struct {
+        Embeddings [][]float64 `json:"embeddings"`
+        Error      struct {
+            Message string `json:"message"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(body, &embedResult); err != nil {
+        return nil, fmt.Errorf("error parsing Cohere Embed response: %v, raw response: %s", err, string(body))
+    }
+    if embedResult.Error.Message != "" {
+        return nil, fmt.Errorf("error from Cohere Embed API: %s", embedResult.Error.Message)
+    }
+    if len(embedResult.Embeddings) == 0 || len(embedResult.Embeddings[0]) == 0 {
+        return nil, fmt.Errorf("no valid embedding from Cohere: %s", string(body))
+    }
+
+    return embedResult.Embeddings[0], nil
+}
+
+// cosineSimilarity calculates the cosine similarity between two vectors
+func cosineSimilarity(vec1, vec2 []float64) float64 {
+    if len(vec1) != len(vec2) {
+        return 0.0
+    }
+
+    dotProduct := 0.0
+    norm1 := 0.0
+    norm2 := 0.0
+    for i := 0; i < len(vec1); i++ {
+        dotProduct += vec1[i] * vec2[i]
+        norm1 += vec1[i] * vec1[i]
+        norm2 += vec2[i] * vec2[i]
+    }
+
+    if norm1 == 0 || norm2 == 0 {
+        return 0.0
+    }
+
+    return dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2))
+}
+
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -358,8 +562,10 @@ func main() {
     aimlKey := os.Getenv("AIMLAPI_API_KEY")
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
     mistralKey := os.Getenv("MISTRAL_API_KEY")
+    anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
+    cohereKey := os.Getenv("COHERE_API_KEY")
 
-    fmt.Printf("Loading API keys for arcab...\n")
+    fmt.Printf("Loading API keys for ARCA-b...\n")
     if openAIKey == "" {
         fmt.Println("Error: OPENAI_API_KEY is not set")
     } else {
@@ -395,6 +601,16 @@ func main() {
     } else {
         fmt.Println("MISTRAL_API_KEY loaded successfully")
     }
+    if anthropicKey == "" {
+        fmt.Println("Error: ANTHROPIC_API_KEY is not set")
+    } else {
+        fmt.Println("ANTHROPIC_API_KEY loaded successfully")
+    }
+    if cohereKey == "" {
+        fmt.Println("Error: COHERE_API_KEY is not set")
+    } else {
+        fmt.Println("COHERE_API_KEY loaded successfully")
+    }
 
     port := os.Getenv("PORT")
     if port == "" {
@@ -408,11 +624,10 @@ func main() {
     client := &http.Client{
         Timeout: 30 * time.Second,
     }
-
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /health")
         w.WriteHeader(http.StatusOK)
-        fmt.Fprint(w, "arcab Chat AI is running on arcab-global-ai.org")
+        fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
     })
 
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +646,7 @@ func main() {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>arcab Chat AI</title>
+    <title>ARCA-b Chat AI</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
@@ -634,6 +849,15 @@ func main() {
         body.dark .vision-text {
             color: #aaa;
         }
+        .contributions {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 10px;
+            text-align: left;
+        }
+        body.dark .contributions {
+            color: #aaa;
+        }
         @media (max-width: 600px) {
             h1 {
                 font-size: 1.2em;
@@ -684,12 +908,12 @@ func main() {
     </style>
 </head>
 <body>
-    <h1>arcab Chat AI</h1>
+    <h1>ARCA-b Chat AI</h1>
     <p style="text-align: center; font-size: 0.9em; color: #666; margin-bottom: 10px;">
         Note: Conversations are temporarily saved to improve the experience. Do not enter personal or sensitive information.
     </p>
     <p class="vision-text">
-        <strong>Vision:</strong> arcab Chat AI aims to unleash the full power of global digital knowledge for everyone, tapping into every AI out there to gather all available data - something no single AI can do alone. It delivers uncensored, propaganda-free answers by blending the best insights from every source into one ultimate response. As an open-source project, arcab is built for scalability and is oriented towards a P2P future, empowering communities to collaborate and grow together.
+        <strong>Vision:</strong> ARCA-b Chat AI aims to unleash the full power of global digital knowledge for everyone, tapping into multiple AI sources to gather diverse data - something no single AI can do alone. It delivers transparent, objective, and propaganda-free answers by blending the best insights from every source into one ultimate response. As an open-source project, ARCA-b is built for scalability, empowering communities to access and share knowledge freely.
     </p>
     <div class="button-container">
         <button onclick="toggleTheme()">Dark/Light Theme</button>
@@ -701,10 +925,6 @@ func main() {
     </div>
     <div class="input-and-style-container">
         <div class="style-container">
-            <select id="style-select">
-                <option value="grok">Informal response style</option>
-                <option value="arca-b">arcab response style</option>
-            </select>
             <select id="language-select">
                 <option value="Italiano">Italiano</option>
                 <option value="English">English</option>
@@ -717,19 +937,16 @@ func main() {
             <button onclick="clearChat()">Clear Chat</button>
         </div>
     </div>
+    <p style="text-align: center; font-size: 0.8em; color: #666; margin-top: 10px;">
+        ARCA-b is an open-source project. Check out the code on <a href="https://github.com/thomasinama/ARCA-b" target="_blank">GitHub</a>.
+    </p>
     <script>
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
-        const styleSelect = document.getElementById("style-select");
         const languageSelect = document.getElementById("language-select");
 
         if (localStorage.getItem("theme") === "dark") {
             document.body.classList.add("dark");
-        }
-        if (localStorage.getItem("style") === "arca-b") {
-            styleSelect.value = "arca-b";
-        } else {
-            styleSelect.value = "grok";
         }
         if (localStorage.getItem("language")) {
             languageSelect.value = localStorage.getItem("language");
@@ -742,9 +959,9 @@ func main() {
             localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
         }
 
-        function addMessage(text, isUser, style, rawResponses) {
+        function addMessage(text, isUser, rawResponses, contributions) {
             const div = document.createElement("div");
-            const messageText = (isUser ? "You: " : "arcab: ") + text;
+            const messageText = (isUser ? "You: " : "ARCA-b: ") + text;
             div.innerHTML = messageText.replace(/\n/g, "<br>");
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
@@ -755,6 +972,13 @@ func main() {
                 shareButton.className = "share-button";
                 shareButton.onclick = () => shareResponse(getLastUserQuestion(), text);
                 div.appendChild(shareButton);
+            }
+
+            if (!isUser && contributions && contributions.trim() !== "") {
+                const contributionsDiv = document.createElement("div");
+                contributionsDiv.className = "contributions";
+                contributionsDiv.innerHTML = "<strong>Contributions:</strong><br>" + contributions.replace(/\n/g, "<br>");
+                chat.appendChild(contributionsDiv);
             }
 
             if (!isUser && rawResponses && rawResponses.trim() !== "") {
@@ -778,8 +1002,6 @@ func main() {
                 details.className = "details";
                 details.innerHTML = rawResponses.replace(/\n/g, "<br>");
                 chat.appendChild(details);
-            } else if (!isUser) {
-                console.log("No raw responses provided or empty for this message.");
             }
 
             chat.scrollTop = chat.scrollHeight;
@@ -795,10 +1017,10 @@ func main() {
         }
 
         function shareResponse(question, answer) {
-            const shareText = "Question: " + question + "\nAnswer from arcab Chat AI: " + answer + "\n\nTry it yourself at: https://arcab-global-ai.org";
+            const shareText = "Question: " + question + "\nAnswer from ARCA-b Chat AI: " + answer + "\n\nTry it yourself at: https://arcab-global-ai.org";
             if (navigator.share) {
                 navigator.share({
-                    title: "arcab Chat AI Response",
+                    title: "ARCA-b Chat AI Response",
                     text: shareText,
                     url: "https://arcab-global-ai.org",
                 }).catch(err => {
@@ -842,15 +1064,13 @@ func main() {
             addMessage(question, true);
             input.value = "";
 
-            const style = styleSelect.value;
             const language = languageSelect.value;
-            localStorage.setItem("style", style);
             localStorage.setItem("language", language);
 
             showProcessingMessage();
             try {
                 const minDisplayTime = new Promise(resolve => setTimeout(resolve, 1000));
-                const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&style=" + style + "&language=" + encodeURIComponent(language), {
+                const response = await fetch("/ask?question=" + encodeURIComponent(question) + "&language=" + encodeURIComponent(language), {
                     credentials: "include"
                 });
                 const answer = await Promise.all([response.json(), minDisplayTime]);
@@ -858,11 +1078,12 @@ func main() {
                 removeProcessingMessage();
                 const rawResponses = answer[0].rawResponses || "";
                 const synthesizedAnswer = answer[0].synthesized || "Error: No synthesized response.";
-                addMessage(synthesizedAnswer, false, style, rawResponses);
+                const contributions = answer[0].contributions || "";
+                addMessage(synthesizedAnswer, false, rawResponses, contributions);
             } catch (error) {
                 console.error("Error during request:", error);
                 removeProcessingMessage();
-                addMessage("Error: I couldn't get a response.", false, style);
+                addMessage("Error: I couldn't get a response.", false);
             }
         }
 
@@ -890,7 +1111,7 @@ func main() {
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
-    <title>Donations - arcab Chat AI</title>
+    <title>Donations - ARCA-b Chat AI</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
@@ -902,7 +1123,7 @@ func main() {
     </style>
 </head>
 <body>
-    <h1>Support arcab Chat AI</h1>
+    <h1>Support ARCA-b Chat AI</h1>
     <p>Your donations help us improve the project and keep it free from censorship and propaganda. Thank you!</p>
     <p>Please send your donation to one of the following cryptocurrency addresses:</p>
     <div class="crypto-address"><strong>Bitcoin (BTC):</strong> <code>38JkmWhTFYosecu45ewoheYMjJw68sHSj3</code></div>
@@ -977,14 +1198,6 @@ func main() {
         question = strings.ReplaceAll(question, "<", "<")
         question = strings.ReplaceAll(question, ">", ">")
 
-        style := r.URL.Query().Get("style")
-        if style == "" {
-            style = "grok"
-        }
-        if style == "inama" {
-            style = "arca-b"
-        }
-
         language := r.URL.Query().Get("language")
         if language == "" {
             language = "Italiano" // Default
@@ -1003,15 +1216,13 @@ func main() {
             Content: question,
         })
 
-        // Struttura per raccogliere le risposte
         type aiResponse struct {
             name    string
             content string
             err     error
         }
 
-        // Canale per raccogliere le risposte
-        responses := make(chan aiResponse, 4)
+        responses := make(chan aiResponse, 6)
         var wg sync.WaitGroup
 
         // OpenAI
@@ -1117,38 +1328,55 @@ func main() {
             responses <- aiResponse{name: "Mistral", content: answer, err: err}
         }()
 
-        // Chiudi il canale quando tutte le goroutine sono terminate
+        // Anthropic
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            prompt := fmt.Sprintf("Respond in %s: %s", language, question)
+            answer, err := getAnthropicResponse(anthropicKey, client, prompt)
+            if err != nil {
+                fmt.Printf("Errore con Anthropic: %v\n", err)
+                answer = fmt.Sprintf("Errore: Anthropic non ha risposto. (in %s)", language)
+            }
+            responses <- aiResponse{name: "Anthropic", content: answer, err: err}
+        }()
+
+        // Cohere
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            prompt := fmt.Sprintf("Respond in %s: %s", language, question)
+            answer, err := getCohereResponse(cohereKey, client, prompt)
+            if err != nil {
+                fmt.Printf("Errore con Cohere: %v\n", err)
+                answer = fmt.Sprintf("Errore: Cohere non ha risposto. (in %s)", language)
+            }
+            responses <- aiResponse{name: "Cohere", content: answer, err: err}
+        }()
+
         go func() {
             wg.Wait()
             close(responses)
         }()
 
-        // Raccogli le risposte
         rawResponses := strings.Builder{}
         rawResponses.WriteString("### Original Responses\n\n")
-        synthesisParts := make([]string, 0, 4)
+        synthesisParts := make([]string, 0, 6)
+        responseMap := make(map[string]string)
         for resp := range responses {
             synthesisParts = append(synthesisParts, fmt.Sprintf("%s: %s", resp.name, resp.content))
             rawResponses.WriteString(fmt.Sprintf("#### %s\n%s\n\n", resp.name, resp.content))
+            responseMap[resp.name] = resp.content
         }
 
-        // Sintesi delle risposte
         var synthesizedAnswer string
         if len(synthesisParts) == 0 {
             synthesizedAnswer = fmt.Sprintf("Error: No valid responses to synthesize. (in %s)", language)
         } else {
-            var synthesisPrompt string
-            if style == "arca-b" {
-                synthesisPrompt = fmt.Sprintf(
-                    "Respond in %s: Take these responses and mix them into one, using the best from each, with a bit of science, culture, history, and tech, in a simple and informal style like you're talking to a friend over a beer. No introductions, straight to the point:\n\n%s",
-                    language, strings.Join(synthesisParts, "\n\n"),
-                )
-            } else {
-                synthesisPrompt = fmt.Sprintf(
-                    "Respond in %s: The user asked: '%s'. Synthesize these responses into a complete and direct answer, blending the most interesting aspects of each, with scientific, cultural, historical, and technological perspectives, in an informal and clear style:\n\n%s",
-                    language, question, strings.Join(synthesisParts, "\n\n"),
-                )
-            }
+            synthesisPrompt := fmt.Sprintf(
+                "Respond in %s: The user asked: '%s'. Synthesize these responses into a concise, informative, and engaging answer. Blend the most relevant and interesting aspects of each response, incorporating scientific, cultural, historical, and technological perspectives where applicable. Avoid repetition, ensure clarity, and provide a cohesive response that feels natural and well-rounded:\n\n%s",
+                language, question, strings.Join(synthesisParts, "\n\n"),
+            )
 
             synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
@@ -1173,9 +1401,57 @@ func main() {
             }
         }
 
+        // Calcola i pesi delle risposte nella sintesi
+        contributions := ""
+        if !strings.Contains(synthesizedAnswer, "Errore") && len(responseMap) > 0 {
+            // Ottieni l'embedding della risposta sintetizzata
+            synthesizedEmbedding, err := getCohereEmbedding(cohereKey, client, synthesizedAnswer)
+            if err != nil {
+                fmt.Printf("Errore nel calcolo dell'embedding della sintesi: %v\n", err)
+                contributions = "Errore: Non sono riuscito a calcolare i contributi."
+            } else {
+                // Calcola gli embedding e la similarità per ogni risposta
+                similarities := make(map[string]float64)
+                totalSimilarity := 0.0
+                for name, content := range responseMap {
+                    if strings.Contains(content, "Errore") {
+                        similarities[name] = 0.0
+                        continue
+                    }
+                    embedding, err := getCohereEmbedding(cohereKey, client, content)
+                    if err != nil {
+                        fmt.Printf("Errore nel calcolo dell'embedding per %s: %v\n", name, err)
+                        similarities[name] = 0.0
+                        continue
+                    }
+                    similarity := cosineSimilarity(synthesizedEmbedding, embedding)
+                    if similarity < 0 {
+                        similarity = 0
+                    }
+                    similarities[name] = similarity
+                    totalSimilarity += similarity
+                }
+
+                // Normalizza in percentuali
+                contributionsBuilder := strings.Builder{}
+                for name, similarity := range similarities {
+                    if totalSimilarity > 0 {
+                        percentage := (similarity / totalSimilarity) * 100
+                        contributionsBuilder.WriteString(fmt.Sprintf("%s: %.1f%%\n", name, percentage))
+                    } else {
+                        contributionsBuilder.WriteString(fmt.Sprintf("%s: 0.0%%\n", name))
+                    }
+                }
+                contributions = contributionsBuilder.String()
+            }
+        } else {
+            contributions = "Non disponibile: la sintesi non è stata generata correttamente o non ci sono risposte valide."
+        }
+
         response := map[string]string{
-            "synthesized":  synthesizedAnswer,
-            "rawResponses": rawResponses.String(),
+            "synthesized":   synthesizedAnswer,
+            "rawResponses":  rawResponses.String(),
+            "contributions": contributions,
         }
         fmt.Println("Invio risposta JSON:", response)
 
@@ -1194,7 +1470,7 @@ func main() {
         }
     })
 
-    fmt.Printf("arcab server in ascolto sulla porta %s...\n", port)
+    fmt.Printf("ARCA-b server in ascolto sulla porta %s...\n", port)
     if err := http.ListenAndServe(":"+port, nil); err != nil {
         fmt.Printf("Errore nell'avvio del server: %v\n", err)
         os.Exit(1)
