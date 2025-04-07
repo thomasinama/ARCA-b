@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ARCA-b Chat AI</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f2f5;
+            transition: background-color 0.3s, color 0.3s;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        body.dark {
+            background-color: #1a1a1a;
+            color: #e0e0e0;
+        }
+        h1 {
+            font-size: 1.5em;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        .button-container {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        #chat {
+            border: 1px solid #ccc;
+            padding: 10px;
+            background-color: white;
+            border-radius: 10px;
+            transition: background-color 0.3s;
+            min-height: 200px;
+        }
+        body.dark #chat {
+            background-color: #2a2a2a;
+            border-color: #444;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 10px;
+            max-width: 80%;
+            word-wrap: break-word;
+            opacity: 0;
+            animation: fadeIn 0.5s forwards;
+            position: relative;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .user {
+            background-color: #007bff;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        .bot {
+            background-color: #e9ecef;
+            color: black;
+            margin-right: auto;
+        }
+        body.dark .user {
+            background-color: #1e90ff;
+        }
+        body.dark .bot {
+            background-color: #444;
+            color: #e0e0e0;
+        }
+        .input-and-style-container {
+            position: sticky;
+            bottom: 10px;
+            background-color: #f0f2f5;
+            padding: 10px 0;
+            z-index: 10;
+            transition: background-color 0.3s;
+        }
+        body.dark .input-and-style-container {
+            background-color: #1a1a1a;
+        }
+        .style-container {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        select {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1em;
+            background-color: white;
+            transition: background-color 0.3s, border-color 0.3s;
+        }
+        body.dark select {
+            background-color: #333;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        .input-container {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+        #input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 1em;
+            transition: background-color 0.3s, border-color 0.3s;
+            min-width: 200px;
+        }
+        body.dark #input {
+            background-color: #333;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        button {
+            padding: 10px 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1em;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        body.dark button {
+            background-color: #1e90ff;
+        }
+        body.dark button:hover {
+            background-color: #0066cc;
+        }
+        .share-button, .save-button {
+            padding: 5px 10px;
+            font-size: 0.8em;
+            margin-left: 10px;
+            background-color: #28a745;
+        }
+        .share-button:hover, .save-button:hover {
+            background-color: #218838;
+        }
+        body.dark .share-button, body.dark .save-button {
+            background-color: #2ecc71;
+        }
+        body.dark .share-button:hover, body.dark .save-button:hover {
+            background-color: #27ae60;
+        }
+        .processing {
+            font-style: italic;
+            color: #666;
+            margin: 5px 0;
+            text-align: left;
+        }
+        body.dark .processing {
+            color: #aaa;
+        }
+        .details {
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        body.dark .details {
+            background-color: #333;
+            border-color: #555;
+        }
+        .toggle-details {
+            cursor: pointer;
+            color: #007bff;
+            text-decoration: underline;
+            margin-top: 5px;
+            display: inline-block;
+        }
+        body.dark .toggle-details {
+            color: #1e90ff;
+        }
+        .vision-text {
+            text-align: center;
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 20px;
+            line-height: 1.4;
+        }
+        body.dark .vision-text {
+            color: #aaa;
+        }
+        .contributions {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 10px;
+            text-align: left;
+        }
+        body.dark .contributions {
+            color: #aaa;
+        }
+        @media (max-width: 600px) {
+            h1 {
+                font-size: 1.2em;
+            }
+            #chat-container {
+                margin-bottom: 10px;
+            }
+            #chat {
+                margin-top: 10px;
+            }
+            .input-and-style-container {
+                padding: 5px 0;
+            }
+            .style-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            select {
+                width: 100%;
+            }
+            .input-container {
+                flex-direction: column;
+                gap: 5px;
+            }
+            #input {
+                width: 100%;
+                font-size: 0.9em;
+            }
+            button {
+                width: 100%;
+                padding: 12px;
+                font-size: 0.9em;
+            }
+            .button-container {
+                flex-direction: column;
+                gap: 10px;
+                align-items: center;
+            }
+            .button-container button {
+                width: 100%;
+                max-width: 200px;
+            }
+            .share-button, .save-button {
+                margin-left: 0;
+                margin-top: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <h1>ARCA-b Chat AI</h1>
+    <p style="text-align: center; font-size: 0.9em; color: #666; margin-bottom: 10px;">
+        Note: Conversations are not saved on the server to protect your privacy. Messages are encrypted in your browser.
+    </p>
+    <p class="vision-text">
+        <strong>Vision:</strong> ARCA-b Chat AI aims to unleash the full power of global digital knowledge for everyone, tapping into multiple AI sources to gather diverse data - something no single AI can do alone. It delivers transparent, objective, and propaganda-free answers by blending the best insights from every source into one ultimate response. As an open-source project, ARCA-b is built for scalability, empowering communities to access and share knowledge freely.
+    </p>
+    <div class="button-container">
+        <button onclick="toggleTheme()">Dark/Light Theme</button>
+        <a href="/donate"><button>Donate</button></a>
+        <a href="mailto:arcab.founder@gmail.com"><button>Contact</button></a>
+    </div>
+    <div id="chat-container">
+        <div id="chat"></div>
+    </div>
+    <div class="input-and-style-container">
+        <div class="style-container">
+            <select id="language-select">
+                <option value="Italiano">Italiano</option>
+                <option value="English">English</option>
+                <option value="Deutsch">Deutsch</option>
+            </select>
+        </div>
+        <div class="input-container">
+            <input id="input" type="text" placeholder="Write your question...">
+            <button onclick="sendMessage()">Send</button>
+            <button onclick="clearChat()">Clear Chat</button>
+        </div>
+    </div>
+    <p style="text-align: center; font-size: 0.8em; color: #666; margin-top: 10px;">
+        ARCA-b is an open-source project. Check out the code on <a href="https://github.com/thomasinama/ARCA-b" target="_blank">GitHub</a>.
+    </p>
+    <script>
+        let encryptionKey = null;
+        let conversationHistory = [];
+
+        // Genera una chiave di crittografia all'avvio
+        async function generateKey() {
+            return await crypto.subtle.generateKey(
+                { name: "AES-GCM", length: 256 },
+                true,
+                ["encrypt", "decrypt"]
+            );
+        }
+
+        // Crittografa un messaggio
+        async function encryptMessage(message, key) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(message);
+            const iv = crypto.getRandomValues(new Uint8Array(12));
+            const encrypted = await crypto.subtle.encrypt(
+               
