@@ -16,7 +16,6 @@ import (
     "github.com/sashabaranov/go-openai"
 )
 
-// --- SEZIONE 1: Strutture dati e variabili globali ---
 type Session struct {
     History []openai.ChatCompletionMessage
 }
@@ -46,8 +45,7 @@ var (
     mutex           = &sync.Mutex{}
     hourlyLimit     = 15
 )
-
-// --- SEZIONE 2: Funzioni per le API (DeepInfra, AIMLAPI, HuggingFace, Mistral, DeepSeek, Cohere) ---
+// getDeepInfraResponse to synthesize responses using the DeepInfra API
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
         return "", fmt.Errorf("DEEPINFRA_API_KEY is not set")
@@ -112,6 +110,7 @@ func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt strin
     return deepInfraResult.Choices[0].Message.Content, nil
 }
 
+// getAIMLAPIResponse to synthesize responses using the AIMLAPI API
 func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (string, error) {
     if aimlKey == "" {
         return "", fmt.Errorf("AIMLAPI_API_KEY is not set")
@@ -176,6 +175,7 @@ func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (str
     return aimlResult.Choices[0].Message.Content, nil
 }
 
+// getHuggingFaceResponse to synthesize responses using the Hugging Face API
 func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (string, error) {
     if hfKey == "" {
         return "", fmt.Errorf("HUGGINGFACE_API_KEY is not set")
@@ -239,6 +239,7 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     return strings.TrimSpace(generatedText), nil
 }
 
+// getMistralResponse to get responses using the Mistral API
 func getMistralResponse(mistralKey string, client *http.Client, prompt string) (string, error) {
     if mistralKey == "" {
         return "", fmt.Errorf("MISTRAL_API_KEY is not set")
@@ -303,6 +304,7 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
     return mistralResult.Choices[0].Message.Content, nil
 }
 
+// getDeepSeekResponse to get responses using the DeepSeek API
 func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []openai.ChatCompletionMessage, language string) (string, error) {
     if deepSeekKey == "" {
         return "", fmt.Errorf("DEEPSEEK_API_KEY is not set")
@@ -362,6 +364,66 @@ func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []ope
     return "", fmt.Errorf("no valid response from DeepSeek: %s", string(bodyResp))
 }
 
+// getAnthropicResponse to synthesize responses using the Anthropic API
+func getAnthropicResponse(anthropicKey string, client *http.Client, prompt string) (string, error) {
+    if anthropicKey == "" {
+        return "", fmt.Errorf("ANTHROPIC_API_KEY is not set")
+    }
+
+    prompt = strings.ReplaceAll(prompt, "\n", " ")
+    prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
+    logLimit := 100
+    if len(prompt) < logLimit {
+        logLimit = len(prompt)
+    }
+    fmt.Println("Sending request to Anthropic with prompt (first 100 chars):", prompt[:logLimit], "...")
+
+    payload := fmt.Sprintf(`{"model": "claude-3-sonnet-20240229", "max_tokens": 1000, "temperature": 0.7, "messages": [{"role": "user", "content": "%s"}]}`, prompt)
+    req, err := http.NewRequest("POST", "https://api.anthropic.com/v1/messages", strings.NewReader(payload))
+    if err != nil {
+        return "", fmt.Errorf("error creating request to Anthropic: %v", err)
+    }
+
+    req.Header.Set("x-api-key", anthropicKey)
+    req.Header.Set("anthropic-version", "2023-06-01")
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Accept", "application/json")
+
+    resp, err := client.Do(req)
+    if err != nil {
+        return "", fmt.Errorf("error with Anthropic request: %v", err)
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading Anthropic response: %v", err)
+    }
+    fmt.Println("Raw response from Anthropic (status %d): %s", resp.StatusCode, string(body))
+
+    var anthropicResult struct {
+        Content []struct {
+            Text string `json:"text"`
+        } `json:"content"`
+        Error struct {
+            Type    string `json:"type"`
+            Message string `json:"message"`
+        } `json:"error"`
+    }
+    if err := json.Unmarshal(body, &anthropicResult); err != nil {
+        return "", fmt.Errorf("error parsing Anthropic response: %v, raw response: %s", err, string(body))
+    }
+    if anthropicResult.Error.Message != "" {
+        return "", fmt.Errorf("error from Anthropic API (type: %s): %s", anthropicResult.Error.Type, anthropicResult.Error.Message)
+    }
+    if len(anthropicResult.Content) == 0 || anthropicResult.Content[0].Text == "" {
+        return "", fmt.Errorf("no valid response from Anthropic: %s", string(body))
+    }
+
+    return anthropicResult.Content[0].Text, nil
+}
+
+// getCohereResponse to synthesize responses using the Cohere API
 func getCohereResponse(cohereKey string, client *http.Client, prompt string) (string, error) {
     if cohereKey == "" {
         return "", fmt.Errorf("COHERE_API_KEY is not set")
@@ -432,7 +494,7 @@ func getCohereResponse(cohereKey string, client *http.Client, prompt string) (st
     return responseText, nil
 }
 
-// --- SEZIONE 3: Funzioni per gli embedding e la similarità ---
+// getCohereEmbedding to get embeddings for text using the Cohere API
 func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]float64, error) {
     if cohereKey == "" {
         return nil, fmt.Errorf("COHERE_API_KEY is not set")
@@ -481,6 +543,7 @@ func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]f
     return embedResult.Embeddings[0], nil
 }
 
+// cosineSimilarity calculates the cosine similarity between two vectors
 func cosineSimilarity(vec1, vec2 []float64) float64 {
     if len(vec1) != len(vec2) {
         return 0.0
@@ -501,8 +564,6 @@ func cosineSimilarity(vec1, vec2 []float64) float64 {
 
     return dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2))
 }
-
-// --- SEZIONE 4: Funzione main e handler ---
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -511,6 +572,7 @@ func main() {
     aimlKey := os.Getenv("AIMLAPI_API_KEY")
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
     mistralKey := os.Getenv("MISTRAL_API_KEY")
+    anthropicKey := os.Getenv("ANTHROPIC_API_KEY")
     cohereKey := os.Getenv("COHERE_API_KEY")
 
     fmt.Printf("Loading API keys for ARCA-b...\n")
@@ -549,6 +611,11 @@ func main() {
     } else {
         fmt.Println("MISTRAL_API_KEY loaded successfully")
     }
+    if anthropicKey == "" {
+        fmt.Println("Error: ANTHROPIC_API_KEY is not set")
+    } else {
+        fmt.Println("ANTHROPIC_API_KEY loaded successfully")
+    }
     if cohereKey == "" {
         fmt.Println("Error: COHERE_API_KEY is not set")
     } else {
@@ -574,19 +641,19 @@ func main() {
         fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
     })
 
-http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-    fmt.Println("Received request on /")
-    sessionID, err := r.Cookie("session_id")
-    if err != nil || sessionID == nil {
-        sessionID = &http.Cookie{
-            Name:  "session_id",
-            Value: uuid.New().String(),
-            Path:  "/",
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Received request on /")
+        sessionID, err := r.Cookie("session_id")
+        if err != nil || sessionID == nil {
+            sessionID = &http.Cookie{
+                Name:  "session_id",
+                Value: uuid.New().String(),
+                Path:  "/",
+            }
+            http.SetCookie(w, sessionID)
         }
-        http.SetCookie(w, sessionID)
-    }
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    fmt.Fprintf(w, `
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        fmt.Fprintf(w, `
 <!DOCTYPE html>
 <html>
 <head>
@@ -595,31 +662,23 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
         body {
-            font-family: 'Courier New', monospace;
+            font-family: Arial, sans-serif;
             margin: 0;
             padding: 20px;
-            background-color: #0d0d0d;
-            color: #00ff00;
+            background-color: #f0f2f5;
+            transition: background-color 0.3s, color 0.3s;
             display: flex;
             flex-direction: column;
             min-height: 100vh;
-            overflow-x: hidden;
         }
         body.dark {
-            background-color: #0d0d0d;
-            color: #00ff00;
+            background-color: #1a1a1a;
+            color: #e0e0e0;
         }
         h1 {
-            font-size: 1.8em;
+            font-size: 1.5em;
             margin-bottom: 15px;
             text-align: center;
-            text-shadow: 0 0 10px #00ff00;
-            animation: glitch 2s linear infinite;
-        }
-        @keyframes glitch {
-            2%, 64% { transform: translate(2px, 0) skew(0deg); }
-            4%, 60% { transform: translate(-2px, 0) skew(0deg); }
-            62% { transform: translate(0, 0) skew(5deg); }
         }
         .button-container {
             display: flex;
@@ -629,67 +688,63 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         }
         #chat-container {
             flex: 1;
-            display: flex;
-            flex-direction: column;
-            overflow-y: hidden;
-            margin-bottom: 10px;
-            border: 1px solid #00ff00;
-            border-radius: 10px;
-            background-color: #1a1a1a;
-            box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
+            overflow-y: auto;
+            margin-bottom: 20px;
         }
         #chat {
-            flex-grow: 1;
+            border: 1px solid #ccc;
             padding: 10px;
-            background-color: transparent;
+            background-color: white;
             border-radius: 10px;
-            overflow-y: auto;
+            transition: background-color 0.3s;
+            min-height: 200px;
         }
         body.dark #chat {
-            background-color: transparent;
+            background-color: #2a2a2a;
+            border-color: #444;
         }
         .message {
             margin: 10px 0;
             padding: 10px;
-            border-radius: 5px;
+            border-radius: 10px;
             max-width: 80%;
             word-wrap: break-word;
             opacity: 0;
             animation: fadeIn 0.5s forwards;
             position: relative;
-            text-shadow: 0 0 5px #00ff00;
         }
         @keyframes fadeIn {
             from { opacity: 0; transform: translateY(10px); }
             to { opacity: 1; transform: translateY(0); }
         }
         .user {
-            background-color: #1e90ff;
-            color: #ffffff;
+            background-color: #007bff;
+            color: white;
             margin-left: auto;
             text-align: right;
-            box-shadow: 0 0 10px #1e90ff;
         }
         .bot {
-            background-color: #333;
-            color: #00ff00;
+            background-color: #e9ecef;
+            color: black;
             margin-right: auto;
-            box-shadow: 0 0 10px #00ff00;
         }
         body.dark .user {
             background-color: #1e90ff;
         }
         body.dark .bot {
-            background-color: #333;
-            color: #00ff00;
+            background-color: #444;
+            color: #e0e0e0;
         }
         .input-and-style-container {
             position: sticky;
-            bottom: 0;
+            bottom: 10px;
+            background-color: #f0f2f5;
+            padding: 10px 0;
+            z-index: 10;
+            transition: background-color 0.3s;
+        }
+        body.dark .input-and-style-container {
             background-color: #1a1a1a;
-            padding: 10px;
-            border-top: 1px solid #00ff00;
-            box-shadow: 0 -5px 15px rgba(0, 255, 0, 0.2);
         }
         .style-container {
             display: flex;
@@ -699,17 +754,16 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         }
         select {
             padding: 8px;
-            border: 1px solid #00ff00;
+            border: 1px solid #ccc;
             border-radius: 5px;
             font-size: 1em;
-            background-color: #333;
-            color: #00ff00;
-            box-shadow: 0 0 5px #00ff00;
+            background-color: white;
+            transition: background-color 0.3s, border-color 0.3s;
         }
         body.dark select {
             background-color: #333;
-            border-color: #00ff00;
-            color: #00ff00;
+            border-color: #555;
+            color: #e0e0e0;
         }
         .input-container {
             display: flex;
@@ -721,95 +775,77 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         #input {
             flex: 1;
             padding: 10px;
-            border: 1px solid #00ff00;
+            border: 1px solid #ccc;
             border-radius: 5px;
             font-size: 1em;
-            background-color: #333;
-            color: #00ff00;
-            box-shadow: 0 0 5px #00ff00;
+            transition: background-color 0.3s, border-color 0.3s;
             min-width: 200px;
         }
         body.dark #input {
             background-color: #333;
-            border-color: #00ff00;
-            color: #00ff00;
+            border-color: #555;
+            color: #e0e0e0;
         }
         button {
             padding: 10px 15px;
-            background-color: #1e90ff;
-            color: #ffffff;
+            background-color: #007bff;
+            color: white;
             border: none;
             border-radius: 5px;
             cursor: pointer;
             font-size: 1em;
-            box-shadow: 0 0 10px #1e90ff;
-            transition: all 0.3s;
         }
         button:hover {
-            background-color: #00ff00;
-            color: #000000;
-            box-shadow: 0 0 15px #00ff00;
+            background-color: #0056b3;
         }
         body.dark button {
             background-color: #1e90ff;
         }
         body.dark button:hover {
-            background-color: #00ff00;
-            color: #000000;
+            background-color: #0066cc;
         }
         .share-button, .save-button {
             padding: 5px 10px;
             font-size: 0.8em;
             margin-left: 10px;
-            background-color: #ff00ff;
-            box-shadow: 0 0 10px #ff00ff;
+            background-color: #28a745;
         }
         .share-button:hover, .save-button:hover {
-            background-color: #00ff00;
-            box-shadow: 0 0 15px #00ff00;
+            background-color: #218838;
         }
         body.dark .share-button, body.dark .save-button {
-            background-color: #ff00ff;
+            background-color: #2ecc71;
         }
         body.dark .share-button:hover, body.dark .save-button:hover {
-            background-color: #00ff00;
+            background-color: #27ae60;
         }
         .processing {
             font-style: italic;
-            color: #1e90ff;
+            color: #666;
             margin: 5px 0;
             text-align: left;
-            opacity: 0;
-            animation: pulse 1.5s infinite;
-        }
-        @keyframes pulse {
-            0% { opacity: 0.3; }
-            50% { opacity: 1; }
-            100% { opacity: 0.3; }
         }
         body.dark .processing {
-            color: #1e90ff;
+            color: #aaa;
         }
         .details {
             display: none;
             margin-top: 10px;
             padding: 10px;
-            background-color: #222;
-            border: 1px solid #00ff00;
+            background-color: #f9f9f9;
+            border: 1px solid #ddd;
             border-radius: 5px;
-            color: #00ff00;
         }
         body.dark .details {
-            background-color: #222;
-            border-color: #00ff00;
+            background-color: #333;
+            border-color: #555;
         }
         .toggle-details {
             cursor: pointer;
-            color: #1e90ff;
+            color: #007bff;
             text-decoration: underline;
             margin-top: 5px;
             display: inline-block;
-            text-shadow: 0 0 5px #1e90ff;
         }
         body.dark .toggle-details {
             color: #1e90ff;
@@ -817,23 +853,21 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         .vision-text {
             text-align: center;
             font-size: 0.9em;
-            color: #1e90ff;
+            color: #666;
             margin-bottom: 20px;
             line-height: 1.4;
-            text-shadow: 0 0 5px #1e90ff;
         }
         body.dark .vision-text {
-            color: #1e90ff;
+            color: #aaa;
         }
         .contributions {
             font-size: 0.9em;
-            color: #ff00ff;
+            color: #666;
             margin-top: 10px;
             text-align: left;
-            text-shadow: 0 0 5px #ff00ff;
         }
         body.dark .contributions {
-            color: #ff00ff;
+            color: #aaa;
         }
         @media (max-width: 600px) {
             h1 {
@@ -844,6 +878,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             }
             #chat {
                 margin-top: 10px;
+            }
+            .input-and-style-container {
+                padding: 5px 0;
             }
             .style-container {
                 flex-direction: column;
@@ -883,7 +920,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
     <h1>ARCA-b Chat AI</h1>
-    <p style="text-align: center; font-size: 0.9em; color: #1e90ff; margin-bottom: 10px; text-shadow: 0 0 5px #1e90ff;">
+    <p style="text-align: center; font-size: 0.9em; color: #666; margin-bottom: 10px;">
         Note: Conversations are stored temporarily in memory during your session and are not saved to disk. Messages are sent securely over HTTPS.
     </p>
     <p class="vision-text">
@@ -896,22 +933,22 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
     </div>
     <div id="chat-container">
         <div id="chat"></div>
-        <div class="input-and-style-container">
-            <div class="style-container">
-                <select id="language-select">
-                    <option value="Italiano">Italiano</option>
-                    <option value="English">English</option>
-                    <option value="Deutsch">Deutsch</option>
-                </select>
-            </div>
-            <div class="input-container">
-                <input id="input" type="text" placeholder="Write your question...">
-                <button onclick="sendMessage()">Send</button>
-                <button onclick="clearChat()">Clear Chat</button>
-            </div>
+    </div>
+    <div class="input-and-style-container">
+        <div class="style-container">
+            <select id="language-select">
+                <option value="Italiano">Italiano</option>
+                <option value="English">English</option>
+                <option value="Deutsch">Deutsch</option>
+            </select>
+        </div>
+        <div class="input-container">
+            <input id="input" type="text" placeholder="Write your question...">
+            <button onclick="sendMessage()">Send</button>
+            <button onclick="clearChat()">Clear Chat</button>
         </div>
     </div>
-    <p style="text-align: center; font-size: 0.8em; color: #1e90ff; margin-top: 10px; text-shadow: 0 0 5px #1e90ff;">
+    <p style="text-align: center; font-size: 0.8em; color: #666; margin-top: 10px;">
         ARCA-b is an open-source project. Check out the code on <a href="https://github.com/thomasinama/ARCA-b" target="_blank">GitHub</a>.
     </p>
     <script>
@@ -1035,8 +1072,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         function removeProcessingMessage() {
             const processingMessage = document.getElementById("processing-message");
             if (processingMessage) {
-                processingMessage.style.opacity = "0";
-                setTimeout(() => processingMessage.remove(), 500); // Rimuove dopo il fade-out
+                processingMessage.remove();
             }
         }
 
@@ -1094,7 +1130,8 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>
 `)
-})
+    })
+
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /donate")
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1203,7 +1240,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         }
         mutex.Unlock()
 
-        // Aggiungiamo il messaggio corrente alla storia, includendo i messaggi precedenti
         session.History = append(session.History, openai.ChatCompletionMessage{
             Role:    openai.ChatMessageRoleUser,
             Content: req.Message,
@@ -1215,7 +1251,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             err     error
         }
 
-        responses := make(chan aiResponse, 5) // 5 API: OpenAI, DeepSeek, Gemini, Mistral, Cohere
+        responses := make(chan aiResponse, 6)
         var wg sync.WaitGroup
 
         // OpenAI
@@ -1265,10 +1301,13 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 answer = fmt.Sprintf("Errore: GEMINI_API_KEY non è impostata. (in %s)", language)
             } else {
                 historyForGemini := ""
-                for _, msg := range session.History {
-                    historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+                for i, msg := range session.History {
+                    if i == len(session.History)-1 {
+                        historyForGemini += fmt.Sprintf("%s: Respond in %s: %s\n", msg.Role, language, req.Message)
+                    } else {
+                        historyForGemini += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
+                    }
                 }
-                historyForGemini += fmt.Sprintf("user: Respond in %s: %s\n", language, req.Message)
                 req, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                     strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
                 if err != nil {
@@ -1309,11 +1348,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         wg.Add(1)
         go func() {
             defer wg.Done()
-            prompt := ""
-            for _, msg := range session.History {
-                prompt += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
-            }
-            prompt += fmt.Sprintf("Respond in %s: %s", language, req.Message)
+            prompt := fmt.Sprintf("Respond in %s: %s", language, req.Message)
             answer, err := getMistralResponse(mistralKey, client, prompt)
             if err != nil {
                 fmt.Printf("Errore con Mistral: %v\n", err)
@@ -1322,15 +1357,24 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             responses <- aiResponse{name: "Mistral", content: answer, err: err}
         }()
 
+        // Anthropic
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            prompt := fmt.Sprintf("Respond in %s: %s", language, req.Message)
+            answer, err := getAnthropicResponse(anthropicKey, client, prompt)
+            if err != nil {
+                fmt.Printf("Errore con Anthropic: %v\n", err)
+                answer = fmt.Sprintf("Errore: Anthropic non ha risposto. (in %s)", language)
+            }
+            responses <- aiResponse{name: "Anthropic", content: answer, err: err}
+        }()
+
         // Cohere
         wg.Add(1)
         go func() {
             defer wg.Done()
-            prompt := ""
-            for _, msg := range session.History {
-                prompt += fmt.Sprintf("%s: %s\n", msg.Role, msg.Content)
-            }
-            prompt += fmt.Sprintf("Respond in %s: %s", language, req.Message)
+            prompt := fmt.Sprintf("Respond in %s: %s", language, req.Message)
             answer, err := getCohereResponse(cohereKey, client, prompt)
             if err != nil {
                 fmt.Printf("Errore con Cohere: %v\n", err)
@@ -1346,7 +1390,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
         rawResponses := strings.Builder{}
         rawResponses.WriteString("### Original Responses\n\n")
-        synthesisParts := make([]string, 0, 5)
+        synthesisParts := make([]string, 0, 6)
         responseMap := make(map[string]string)
         for resp := range responses {
             synthesisParts = append(synthesisParts, fmt.Sprintf("%s: %s", resp.name, resp.content))
@@ -1363,21 +1407,24 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 language, req.Message, strings.Join(synthesisParts, "\n\n"),
             )
 
-            // Usiamo Grok (tramite AIMLAPI) per la sintesi finale
-            synthesizedAnswer, err = getAIMLAPIResponse(aimlKey, client, synthesisPrompt)
+            synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
             if err != nil {
-                fmt.Printf("Errore nella sintesi con Grok (AIMLAPI): %v\n", err)
-                synthesizedAnswer, err = getDeepInfraResponse(deepInfraKey, client, synthesisPrompt)
+                fmt.Printf("Errore nella sintesi con DeepInfra: %v\n", err)
+                synthesizedAnswer, err = getAIMLAPIResponse(aimlKey, client, synthesisPrompt)
                 if err != nil {
-                    fmt.Printf("Errore nella sintesi con DeepInfra: %v\n", err)
-                    for _, part := range synthesisParts {
-                        if !strings.Contains(part, "Errore") {
-                            synthesizedAnswer = strings.TrimPrefix(part, part[:strings.Index(part, ":")+2]) + fmt.Sprintf(" (Note: Synthesis not available, using %s response, in %s)", strings.Split(part, ":")[0], language)
-                            break
+                    fmt.Printf("Errore nella sintesi con AIMLAPI: %v\n", err)
+                    synthesizedAnswer, err = getHuggingFaceResponse(huggingFaceKey, client, synthesisPrompt)
+                    if err != nil {
+                        fmt.Printf("Errore nella sintesi con Hugging Face: %v\n", err)
+                        for _, part := range synthesisParts {
+                            if !strings.Contains(part, "Errore") {
+                                synthesizedAnswer = strings.TrimPrefix(part, part[:strings.Index(part, ":")+2]) + fmt.Sprintf(" (Note: Synthesis not available, using %s response, in %s)", strings.Split(part, ":")[0], language)
+                                break
+                            }
                         }
-                    }
-                    if synthesizedAnswer == "" {
-                        synthesizedAnswer = fmt.Sprintf("Errore: Non sono riuscito a sintetizzare le risposte. (in %s)", language)
+                        if synthesizedAnswer == "" {
+                            synthesizedAnswer = fmt.Sprintf("Errore: Non sono riuscito a sintetizzare le risposte. (in %s)", language)
+                        }
                     }
                 }
             }
@@ -1447,9 +1494,10 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         }
     })
 
-    fmt.Printf("ARCA-b server in ascolto sulla porta %s... PRONTO A STUPIRE! 🚀\n", port)
+    fmt.Printf("ARCA-b server in ascolto sulla porta %s...\n", port)
     if err := http.ListenAndServe(":"+port, nil); err != nil {
         fmt.Printf("Errore nell'avvio del server: %v\n", err)
         os.Exit(1)
     }
 }
+
