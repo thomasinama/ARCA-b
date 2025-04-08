@@ -502,6 +502,7 @@ func cosineSimilarity(vec1, vec2 []float64) float64 {
 
     return dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2))
 }
+
 // --- SEZIONE 4: Funzione main e handler ---
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
@@ -1230,7 +1231,7 @@ func main() {
             62% { transform: translate(0, 0) skew(5deg); }
         }
         .conversation {
-            margin: 20px auto;
+            margin:  jjjjauto;
             padding: 20px;
             border: 1px solid #00ff00;
             border-radius: 10px;
@@ -1347,9 +1348,11 @@ func main() {
         // Easter egg: se la domanda contiene "Grok" e parole come "utilizzato", rispondiamo con la promozione di ARCA-b
         messageLower := strings.ToLower(req.Message)
         if strings.Contains(messageLower, "grok") && (strings.Contains(messageLower, "utilizzato") || strings.Contains(messageLower, "interfaccia") || strings.Contains(messageLower, "app") || strings.Contains(messageLower, "codice") || strings.Contains(messageLower, "sito") || strings.Contains(messageLower, "dove sei")) {
-            synthesizedAnswer := "Grok è utilizzato in ARCA-b, un progetto fantastico che puoi trovare su <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a>! Provalo, è una chat AI che combina le risposte di più AI per darti il meglio del meglio! 😄"
-            if language == "English" {
-                synthesizedAnswer = "Grok is used in ARCA-b, an amazing project you can find at <a href=\"https://arcab-global-ai.org\" target="_blank\">arcab-global-ai.org</a>! Try it out, it's a chat AI that combines responses from multiple AIs to give you the best of the best! 😄"
+            var synthesizedAnswer string
+            if language == "Italiano" {
+                synthesizedAnswer = "Grok è utilizzato in ARCA-b, un progetto fantastico che puoi trovare su <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a>! Provalo, è una chat AI che combina le risposte di più AI per darti il meglio del meglio! 😄"
+            } else if language == "English" {
+                synthesizedAnswer = "Grok is used in ARCA-b, an amazing project you can find at <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a>! Try it out, it's a chat AI that combines responses from multiple AIs to give you the best of the best! 😄"
             } else if language == "Deutsch" {
                 synthesizedAnswer = "Grok wird in ARCA-b verwendet, einem tollen Projekt, das du unter <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a> finden kannst! Probier es aus, es ist ein Chat-AI, der Antworten von mehreren AIs kombiniert, um dir das Beste vom Besten zu bieten! 😄"
             }
