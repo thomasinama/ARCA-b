@@ -16,7 +16,6 @@ import (
     "github.com/sashabaranov/go-openai"
 )
 
-// --- SEZIONE 1: Strutture dati e variabili globali ---
 type Session struct {
     History []openai.ChatCompletionMessage
 }
@@ -28,13 +27,13 @@ type UserRequestTracker struct {
 }
 
 type ChatRequest struct {
-    Message   string `json:"message"` // Messaggio in chiaro
-    Style     string `json:"style"`
-    Language  string `json:"language"`
+    Message  string `json:"message"`
+    Style    string `json:"style"`
+    Language string `json:"language"`
 }
 
 type ChatResponse struct {
-    Response      string `json:"response"` // Risposta in chiaro
+    Response      string `json:"response"`
     RawResponses  string `json:"rawResponses"`
     Contributions string `json:"contributions"`
 }
@@ -43,12 +42,11 @@ var (
     sessions        = make(map[string]*Session)
     requestTrackers = make(map[string]*UserRequestTracker)
     premiumUsers    = make(map[string]bool)
-    conversations   = make(map[string]ChatResponse) // Nuova mappa per salvare le conversazioni
+    conversations   = make(map[string]ChatResponse)
     mutex           = &sync.Mutex{}
     hourlyLimit     = 15
 )
 
-// --- SEZIONE 2: Funzioni per le API (DeepInfra, AIMLAPI, HuggingFace, Mistral, DeepSeek, Cohere) ---
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
         return "", fmt.Errorf("DEEPINFRA_API_KEY is not set")
@@ -310,7 +308,7 @@ func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []ope
     }
     var deepSeekMessages []map[string]string
     for i, msg := range messages {
-        if i == len(messages)-1 { // Ultimo messaggio (la domanda)
+        if i == len(messages)-1 {
             deepSeekMessages = append(deepSeekMessages, map[string]string{
                 "role":    msg.Role,
                 "content": fmt.Sprintf("Respond in %s: %s", language, msg.Content),
@@ -433,7 +431,6 @@ func getCohereResponse(cohereKey string, client *http.Client, prompt string) (st
     return responseText, nil
 }
 
-// --- SEZIONE 3: Funzioni per gli embedding e la similarità ---
 func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]float64, error) {
     if cohereKey == "" {
         return nil, fmt.Errorf("COHERE_API_KEY is not set")
@@ -503,7 +500,13 @@ func cosineSimilarity(vec1, vec2 []float64) float64 {
     return dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2))
 }
 
-// --- SEZIONE 4: Funzione main e handler ---
+func min(a, b int) int {
+    if a < b {
+        return a
+    }
+    return b
+}
+
 func main() {
     openAIKey := os.Getenv("OPENAI_API_KEY")
     deepSeekKey := os.Getenv("DEEPSEEK_API_KEY")
@@ -565,9 +568,7 @@ func main() {
     }
 
     openAIClient := openai.NewClient(openAIKey)
-    client := &http.Client{
-        Timeout: 30 * time.Second,
-    }
+    client := &http.Client{Timeout: 30 * time.Second}
 
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /health")
@@ -575,19 +576,19 @@ func main() {
         fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
     })
 
-    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /")
-        sessionID, err := r.Cookie("session_id")
-        if err != nil || sessionID == nil {
-            sessionID = &http.Cookie{
-                Name:  "session_id",
-                Value: uuid.New().String(),
-                Path:  "/",
-            }
-            http.SetCookie(w, sessionID)
+http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+    fmt.Println("Received request on /")
+    sessionID, err := r.Cookie("session_id")
+    if err != nil || sessionID == nil {
+        sessionID = &http.Cookie{
+            Name:  "session_id",
+            Value: uuid.New().String(),
+            Path:  "/",
         }
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        fmt.Fprintf(w, `
+        http.SetCookie(w, sessionID)
+    }
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    fmt.Fprintf(w, `
 <!DOCTYPE html>
 <html>
 <head>
@@ -605,10 +606,6 @@ func main() {
             flex-direction: column;
             min-height: 100vh;
             overflow-x: hidden;
-        }
-        body.dark {
-            background-color: #0d0d0d;
-            color: #00ff00;
         }
         h1 {
             font-size: 1.8em;
@@ -646,9 +643,6 @@ func main() {
             border-radius: 10px;
             overflow-y: auto;
         }
-        body.dark #chat {
-            background-color: transparent;
-        }
         .message {
             margin: 10px 0;
             padding: 10px;
@@ -677,13 +671,6 @@ func main() {
             margin-right: auto;
             box-shadow: 0 0 10px #00ff00;
         }
-        body.dark .user {
-            background-color: #1e90ff;
-        }
-        body.dark .bot {
-            background-color: #333;
-            color: #00ff00;
-        }
         .input-and-style-container {
             position: sticky;
             bottom: 0;
@@ -707,11 +694,6 @@ func main() {
             color: #00ff00;
             box-shadow: 0 0 5px #00ff00;
         }
-        body.dark select {
-            background-color: #333;
-            border-color: #00ff00;
-            color: #00ff00;
-        }
         .input-container {
             display: flex;
             align-items: center;
@@ -734,11 +716,6 @@ func main() {
             color: #F7931A;
             opacity: 0.7;
         }
-        body.dark #input {
-            background-color: #333;
-            border-color: #F7931A;
-            color: #F7931A;
-        }
         button {
             padding: 10px 15px;
             background-color: #1e90ff;
@@ -755,45 +732,37 @@ func main() {
             color: #000000;
             box-shadow: 0 0 15px #00ff00;
         }
-        body.dark button {
-            background-color: #1e90ff;
-        }
-        body.dark button:hover {
-            background-color: #00ff00;
-            color: #000000;
-        }
-        .share-button, .save-button, .copy-button, .link-button {
+        .save-button, .copy-button, .link-button {
             padding: 5px 10px;
             font-size: 0.8em;
             margin-left: 10px;
             background-color: #ff00ff;
             box-shadow: 0 0 10px #ff00ff;
         }
-        .share-button:hover, .save-button:hover, .copy-button:hover, .link-button:hover {
+        .save-button:hover, .copy-button:hover, .link-button:hover {
             background-color: #00ff00;
             box-shadow: 0 0 15px #00ff00;
         }
-        body.dark .share-button, body.dark .save-button, body.dark .copy-button, body.dark .link-button {
-            background-color: #ff00ff;
-        }
-        body.dark .share-button:hover, body.dark .save-button:hover, body.dark .copy-button:hover, body.dark .link-button:hover {
-            background-color: #00ff00;
-        }
         .processing {
-            font-style: italic;
-            color: #1e90ff;
+            width: 30px;
+            height: 30px;
             margin: 5px 0;
-            text-align: left;
-            opacity: 0;
-            animation: pulse 1.5s infinite;
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
-        @keyframes pulse {
-            0% { opacity: 0.3; }
-            50% { opacity: 1; }
-            100% { opacity: 0.3; }
+        .processing::before {
+            content: "A";
+            color: #00ff00;
+            font-size: 1.5em;
+            text-shadow: 0 0 10px #00ff00;
+            animation: spin 1s linear infinite;
+            display: inline-block;
         }
-        body.dark .processing {
-            color: #1e90ff;
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         .details {
             display: none;
@@ -804,10 +773,6 @@ func main() {
             border-radius: 5px;
             color: #00ff00;
         }
-        body.dark .details {
-            background-color: #222;
-            border-color: #00ff00;
-        }
         .toggle-details {
             cursor: pointer;
             color: #1e90ff;
@@ -815,9 +780,6 @@ func main() {
             margin-top: 5px;
             display: inline-block;
             text-shadow: 0 0 5px #1e90ff;
-        }
-        body.dark .toggle-details {
-            color: #1e90ff;
         }
         .vision-text {
             text-align: center;
@@ -827,18 +789,12 @@ func main() {
             line-height: 1.4;
             text-shadow: 0 0 5px #1e90ff;
         }
-        body.dark .vision-text {
-            color: #1e90ff;
-        }
         .contributions {
             font-size: 0.9em;
             color: #ff00ff;
             margin-top: 10px;
             text-align: left;
             text-shadow: 0 0 5px #ff00ff;
-        }
-        body.dark .contributions {
-            color: #ff00ff;
         }
         .footer {
             text-align: center;
@@ -857,48 +813,17 @@ func main() {
             text-shadow: 0 0 10px #00ff00;
         }
         @media (max-width: 600px) {
-            h1 {
-                font-size: 1.2em;
-            }
-            #chat-container {
-                margin-bottom: 10px;
-            }
-            #chat {
-                margin-top: 10px;
-            }
-            .style-container {
-                flex-direction: column;
-                gap: 5px;
-            }
-            select {
-                width: 100%;
-            }
-            .input-container {
-                flex-direction: column;
-                gap: 5px;
-            }
-            #input {
-                width: 100%;
-                font-size: 0.9em;
-            }
-            button {
-                width: 100%;
-                padding: 12px;
-                font-size: 0.9em;
-            }
-            .button-container {
-                flex-direction: column;
-                gap: 10px;
-                align-items: center;
-            }
-            .button-container button {
-                width: 100%;
-                max-width: 200px;
-            }
-            .share-button, .save-button, .copy-button, .link-button {
-                margin-left: 0;
-                margin-top: 5px;
-            }
+            h1 { font-size: 1.2em; }
+            #chat-container { margin-bottom: 10px; }
+            #chat { margin-top: 10px; }
+            .style-container { flex-direction: column; gap: 5px; }
+            select { width: 100%; }
+            .input-container { flex-direction: column; gap: 5px; }
+            #input { width: 100%; font-size: 0.9em; }
+            button { width: 100%; padding: 12px; font-size: 0.9em; }
+            .button-container { flex-direction: column; gap: 10px; align-items: center; }
+            .button-container button { width: 100%; max-width: 200px; }
+            .save-button, .copy-button, .link-button { margin-left: 0; margin-top: 5px; }
         }
     </style>
 </head>
@@ -911,7 +836,6 @@ func main() {
         <strong>Vision:</strong> ARCA-b Chat AI aims to unleash the full power of global digital knowledge for everyone, tapping into multiple AI sources to gather diverse data - something no single AI can do alone. It delivers transparent, objective, and propaganda-free answers by blending the best insights from every source into one ultimate response. As an open-source project, ARCA-b is built for scalability, empowering communities to access and share knowledge freely.
     </p>
     <div class="button-container">
-        <button onclick="toggleTheme()">Dark/Light Theme</button>
         <a href="/donate"><button>Donate</button></a>
         <a href="mailto:arcab.founder@gmail.com"><button>Contact</button></a>
     </div>
@@ -933,7 +857,7 @@ func main() {
         </div>
     </div>
     <p class="footer">
-        Powered by <a href="https://arcab-global-ai.org" target="_blank">ARCA-b Chat AI - arcab-global-ai.org</a> | Check out the code on <a href="https://github.com/thomasinama/ARCA-b" target="_blank">GitHub</a>
+        Powered by arcab-global-ai.org | Check out the code on <a href="https://github.com/thomasinama/ARCA-b" target="_blank">GitHub</a>
     </p>
     <script>
         let conversationHistory = [];
@@ -942,27 +866,15 @@ func main() {
         const input = document.getElementById("input");
         const languageSelect = document.getElementById("language-select");
 
-        if (localStorage.getItem("theme") === "dark") {
-            document.body.classList.add("dark");
-        }
         if (localStorage.getItem("language")) {
             languageSelect.value = localStorage.getItem("language");
         } else {
             languageSelect.value = "Italiano";
         }
 
-        function toggleTheme() {
-            document.body.classList.toggle("dark");
-            localStorage.setItem("theme", document.body.classList.contains("dark") ? "dark" : "light");
-        }
-
         function addMessage(text, isUser, rawResponses, contributions, index) {
             const div = document.createElement("div");
-            let messageText = (isUser ? "You: " : "ARCA-b: ") + text;
-            if (!isUser) {
-                messageText += '<br><small>Powered by <a href="https://arcab-global-ai.org" target="_blank">ARCA-b Chat AI - arcab-global-ai.org</a></small>';
-            }
-            div.innerHTML = messageText.replace(/\n/g, "<br>");
+            div.innerHTML = (isUser ? "You: " : "ARCA-b: ") + text.replace(/\n/g, "<br>");
             div.className = "message " + (isUser ? "user" : "bot");
             chat.appendChild(div);
 
@@ -1064,20 +976,22 @@ func main() {
         }
 
         function showProcessingMessage() {
+            console.log("Showing processing message...");
             const div = document.createElement("div");
             div.id = "processing-message";
             div.className = "processing";
-            div.textContent = "Response being processed";
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
+            console.log("Processing div added to DOM:", div);
             return div;
         }
 
         function removeProcessingMessage() {
+            console.log("Removing processing message...");
             const processingMessage = document.getElementById("processing-message");
             if (processingMessage) {
-                processingMessage.style.opacity = "0";
-                setTimeout(() => processingMessage.remove(), 500);
+                processingMessage.remove();
+                console.log("Processing message removed from DOM");
             }
         }
 
@@ -1135,8 +1049,7 @@ func main() {
 </body>
 </html>
 `)
-    })
-
+})
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /donate")
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -1231,7 +1144,7 @@ func main() {
             62% { transform: translate(0, 0) skew(5deg); }
         }
         .conversation {
-            margin:  jjjjauto;
+            margin: auto;
             padding: 20px;
             border: 1px solid #00ff00;
             border-radius: 10px;
@@ -1337,57 +1250,11 @@ func main() {
             session = &Session{History: []openai.ChatCompletionMessage{}}
             sessions[sessionID.Value] = session
         }
-        mutex.Unlock()
-
-        // Aggiungiamo il messaggio corrente alla storia, includendo i messaggi precedenti
         session.History = append(session.History, openai.ChatCompletionMessage{
             Role:    openai.ChatMessageRoleUser,
             Content: req.Message,
         })
-
-        // Easter egg: se la domanda contiene "Grok" e parole come "utilizzato", rispondiamo con la promozione di ARCA-b
-        messageLower := strings.ToLower(req.Message)
-        if strings.Contains(messageLower, "grok") && (strings.Contains(messageLower, "utilizzato") || strings.Contains(messageLower, "interfaccia") || strings.Contains(messageLower, "app") || strings.Contains(messageLower, "codice") || strings.Contains(messageLower, "sito") || strings.Contains(messageLower, "dove sei")) {
-            var synthesizedAnswer string
-            if language == "Italiano" {
-                synthesizedAnswer = "Grok è utilizzato in ARCA-b, un progetto fantastico che puoi trovare su <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a>! Provalo, è una chat AI che combina le risposte di più AI per darti il meglio del meglio! 😄"
-            } else if language == "English" {
-                synthesizedAnswer = "Grok is used in ARCA-b, an amazing project you can find at <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a>! Try it out, it's a chat AI that combines responses from multiple AIs to give you the best of the best! 😄"
-            } else if language == "Deutsch" {
-                synthesizedAnswer = "Grok wird in ARCA-b verwendet, einem tollen Projekt, das du unter <a href=\"https://arcab-global-ai.org\" target=\"_blank\">arcab-global-ai.org</a> finden kannst! Probier es aus, es ist ein Chat-AI, der Antworten von mehreren AIs kombiniert, um dir das Beste vom Besten zu bieten! 😄"
-            }
-
-            response := ChatResponse{
-                Response:      synthesizedAnswer,
-                RawResponses:  "",
-                Contributions: "",
-            }
-
-            if req.SaveConversation {
-                conversationId := uuid.New().String()
-                mutex.Lock()
-                conversations[conversationId] = response
-                mutex.Unlock()
-                w.Header().Set("Content-Type", "application/json")
-                json.NewEncoder(w).Encode(map[string]string{"conversationId": conversationId})
-                return
-            }
-
-            mutex.Lock()
-            session.History = append(session.History, openai.ChatCompletionMessage{
-                Role:    openai.ChatMessageRoleAssistant,
-                Content: synthesizedAnswer,
-            })
-            mutex.Unlock()
-
-            w.Header().Set("Content-Type", "application/json")
-            if err := json.NewEncoder(w).Encode(response); err != nil {
-                fmt.Printf("Errore nell'invio della risposta JSON: %v\n", err)
-                http.Error(w, "Errore interno del server", http.StatusInternalServerError)
-                return
-            }
-            return
-        }
+        mutex.Unlock()
 
         type aiResponse struct {
             name    string
@@ -1395,10 +1262,9 @@ func main() {
             err     error
         }
 
-        responses := make(chan aiResponse, 5) // 5 API: OpenAI, DeepSeek, Gemini, Mistral, Cohere
+        responses := make(chan aiResponse, 5)
         var wg sync.WaitGroup
 
-        // OpenAI
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -1424,7 +1290,6 @@ func main() {
             responses <- aiResponse{name: "OpenAI", content: answer, err: nil}
         }()
 
-        // DeepSeek
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -1436,7 +1301,6 @@ func main() {
             responses <- aiResponse{name: "DeepSeek", content: answer, err: err}
         }()
 
-        // Gemini
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -1462,7 +1326,7 @@ func main() {
                         answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
                     } else {
                         defer resp.Body.Close()
-                        var result struct {
+                        var geminiResult struct {
                             Candidates []struct {
                                 Content struct {
                                     Parts []struct {
@@ -1471,13 +1335,13 @@ func main() {
                                 } `json:"content"`
                             } `json:"candidates"`
                         }
-                        if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+                        if err := json.NewDecoder(resp.Body).Decode(&geminiResult); err != nil {
                             fmt.Printf("Errore nel parsing della risposta di Gemini: %v\n", err)
-                            answer = fmt.Sprintf("Errore: Gemini non ha risposto correttamente. (in %s)", language)
-                        } else if len(result.Candidates) == 0 || len(result.Candidates[0].Content.Parts) == 0 {
-                            answer = fmt.Sprintf("Errore: Nessuna risposta valida da Gemini. (in %s)", language)
+                            answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
+                        } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
+                            answer = fmt.Sprintf("Errore: Gemini non ha fornito una risposta valida. (in %s)", language)
                         } else {
-                            answer = result.Candidates[0].Content.Parts[0].Text
+                            answer = geminiResult.Candidates[0].Content.Parts[0].Text
                         }
                     }
                 }
@@ -1485,7 +1349,6 @@ func main() {
             responses <- aiResponse{name: "Gemini", content: answer, err: nil}
         }()
 
-        // Mistral
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -1501,7 +1364,6 @@ func main() {
             responses <- aiResponse{name: "Mistral", content: answer, err: err}
         }()
 
-        // Cohere
         wg.Add(1)
         go func() {
             defer wg.Done()
@@ -1522,87 +1384,106 @@ func main() {
             close(responses)
         }()
 
-        rawResponses := ""
-        contributions := ""
+        wholeResponse := ""
         validResponses := make([]string, 0)
-        for resp := range responses {
-            rawResponses += fmt.Sprintf("%s:\n%s\n\n", resp.name, resp.content)
-            if resp.err == nil && !strings.HasPrefix(resp.content, "Errore:") {
-                validResponses = append(validResponses, resp.content)
-                contributions += fmt.Sprintf("%s ha contribuito alla risposta.\n", resp.name)
+        responseEmbeddings := make(map[string][]float64)
+
+        for response := range responses {
+            wholeResponse += fmt.Sprintf("%s:\n%s\n\n", response.name, response.content)
+            if response.err == nil && !strings.HasPrefix(response.content, "Errore:") {
+                validResponses = append(validResponses, response.content)
+                embedding, err := getCohereEmbedding(cohereKey, client, response.content)
+                if err == nil {
+                    responseEmbeddings[response.name] = embedding
+                }
             }
         }
 
-        var synthesizedAnswer string
+        var selectedAnswer string
+        contributions := ""
+
         if len(validResponses) == 0 {
-            synthesizedAnswer = fmt.Sprintf("Mi dispiace, non ho ricevuto risposte valide da nessuna delle AI. (in %s)", language)
+            selectedAnswer = fmt.Sprintf("Nessuna risposta valida ricevuta. (in %s)", language)
         } else {
             embeddings := make([][]float64, 0)
-            for _, resp := range validResponses {
-                embedding, err := getCohereEmbedding(cohereKey, client, resp)
-                if err != nil {
-                    fmt.Printf("Errore nel calcolo dell'embedding per %s: %v\n", resp, err)
-                    continue
+            for _, response := range validResponses {
+                embedding, err := getCohereEmbedding(cohereKey, client, response)
+                if err == nil {
+                    embeddings = append(embeddings, embedding)
                 }
-                embeddings = append(embeddings, embedding)
             }
 
             if len(embeddings) == 0 {
-                synthesizedAnswer = validResponses[0]
+                selectedAnswer = validResponses[0]
             } else {
                 maxSimilarity := 0.0
                 bestPair := [2]int{0, 0}
                 for i := 0; i < len(embeddings); i++ {
                     for j := i + 1; j < len(embeddings); j++ {
-                        sim := cosineSimilarity(embeddings[i], embeddings[j])
-                        if sim > maxSimilarity {
-                            maxSimilarity = sim
+                        similarity := cosineSimilarity(embeddings[i], embeddings[j])
+                        if similarity > maxSimilarity {
+                            maxSimilarity = similarity
                             bestPair = [2]int{i, j}
                         }
                     }
                 }
 
                 if len(validResponses) == 1 {
-                    synthesizedAnswer = validResponses[0]
+                    selectedAnswer = validResponses[0]
                 } else {
-                    synthesizedAnswer = fmt.Sprintf("Ho combinato le risposte più simili:\n- %s\n- %s", validResponses[bestPair[0]], validResponses[bestPair[1]])
+                    selectedAnswer = fmt.Sprintf("%s\n%s", validResponses[bestPair[0]], validResponses[bestPair[1]])
+                }
+
+                totalSimilarity := 0.0
+                contributionMap := make(map[string]float64)
+                for name, embedding := range responseEmbeddings {
+                    similarity := 0.0
+                    for _, otherEmbedding := range embeddings {
+                        similarity += cosineSimilarity(embedding, otherEmbedding)
+                    }
+                    contributionMap[name] = similarity
+                    totalSimilarity += similarity
+                }
+
+                for name, similarity := range contributionMap {
+                    percentage := (similarity / totalSimilarity) * 100
+                    contributions += fmt.Sprintf("%s: %.0f%%\n", name, percentage)
                 }
             }
         }
 
         response := ChatResponse{
-            Response:      synthesizedAnswer,
-            RawResponses:  rawResponses,
+            Response:      selectedAnswer,
+            RawResponses:  wholeResponse,
             Contributions: contributions,
         }
 
         if req.SaveConversation {
-            conversationId := uuid.New().String()
+            conversationID := uuid.New().String()
             mutex.Lock()
-            conversations[conversationId] = response
+            conversations[conversationID] = response
             mutex.Unlock()
             w.Header().Set("Content-Type", "application/json")
-            json.NewEncoder(w).Encode(map[string]string{"conversationId": conversationId})
+            json.NewEncoder(w).Encode(map[string]string{"conversationId": conversationID})
             return
         }
 
         mutex.Lock()
         session.History = append(session.History, openai.ChatCompletionMessage{
             Role:    openai.ChatMessageRoleAssistant,
-            Content: synthesizedAnswer,
+            Content: selectedAnswer,
         })
         mutex.Unlock()
 
         w.Header().Set("Content-Type", "application/json")
         if err := json.NewEncoder(w).Encode(response); err != nil {
-            fmt.Printf("Errore nell'invio della risposta JSON: %v\n", err)
-            http.Error(w, "Errore interno del server", http.StatusInternalServerError)
-            return
+            fmt.Printf("Errore nella codifica della risposta JSON: %v\n", err)
+            http.Error(w, "Errore del server", http.StatusInternalServerError)
         }
     })
 
     fmt.Printf("Starting server on port %s...\n", port)
     if err := http.ListenAndServe(":"+port, nil); err != nil {
-        fmt.Printf("Errore nell'avvio del server: %v\n", err)
+        fmt.Printf("Server error: %v\n", err)
     }
 }
