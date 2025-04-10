@@ -27,9 +27,12 @@ type UserRequestTracker struct {
 }
 
 type ChatRequest struct {
-    Message  string `json:"message"`
-    Style    string `json:"style"`
-    Language string `json:"language"`
+    Message           string `json:"message"`
+    Response          string `json:"response"`
+    Style             string `json:"style"`
+    Language          string `json:"language"`
+    SaveConversation  bool   `json:"saveConversation"`
+    ConversationIndex int    `json:"conversationIndex"`
 }
 
 type ChatResponse struct {
@@ -51,45 +54,32 @@ func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt strin
     if deepInfraKey == "" {
         return "", fmt.Errorf("DEEPINFRA_API_KEY is not set")
     }
-
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
-    logLimit := 100
-    if len(prompt) < logLimit {
-        logLimit = len(prompt)
-    }
-    fmt.Println("Sending request to DeepInfra with prompt (first 100 chars):", prompt[:logLimit], "...")
-
     payload := fmt.Sprintf(`{"model": "meta-llama/Meta-Llama-3-8B-Instruct", "messages": [{"role": "user", "content": "%s"}], "max_tokens": 1000, "temperature": 0.7}`, prompt)
     req, err := http.NewRequest("POST", "https://api.deepinfra.com/v1/openai/chat/completions", strings.NewReader(payload))
     if err != nil {
         return "", fmt.Errorf("error creating request to DeepInfra: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+deepInfraKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with DeepInfra (attempt %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
         return "", fmt.Errorf("error with DeepInfra after 3 attempts: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return "", fmt.Errorf("error reading DeepInfra response: %v", err)
     }
-    fmt.Println("Raw response from DeepInfra (status %d): %s", resp.StatusCode, string(body))
-
     var deepInfraResult struct {
         Choices []struct {
             Message struct {
@@ -99,15 +89,14 @@ func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt strin
         Error string `json:"error"`
     }
     if err := json.Unmarshal(body, &deepInfraResult); err != nil {
-        return "", fmt.Errorf("error parsing DeepInfra response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("error parsing DeepInfra response: %v", err)
     }
     if deepInfraResult.Error != "" {
         return "", fmt.Errorf("error from DeepInfra: %s", deepInfraResult.Error)
     }
     if len(deepInfraResult.Choices) == 0 || deepInfraResult.Choices[0].Message.Content == "" {
-        return "", fmt.Errorf("no valid response from DeepInfra: %s", string(body))
+        return "", fmt.Errorf("no valid response from DeepInfra")
     }
-
     return deepInfraResult.Choices[0].Message.Content, nil
 }
 
@@ -115,45 +104,32 @@ func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (str
     if aimlKey == "" {
         return "", fmt.Errorf("AIMLAPI_API_KEY is not set")
     }
-
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
-    logLimit := 100
-    if len(prompt) < logLimit {
-        logLimit = len(prompt)
-    }
-    fmt.Println("Sending request to AIMLAPI with prompt (first 100 chars):", prompt[:logLimit], "...")
-
     payload := fmt.Sprintf(`{"model": "Grok", "messages": [{"role": "user", "content": "%s"}]}`, prompt)
     req, err := http.NewRequest("POST", "https://api.aimlapi.com/v1/chat/completions", strings.NewReader(payload))
     if err != nil {
         return "", fmt.Errorf("error creating request to AIMLAPI: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+aimlKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with AIMLAPI (attempt %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
         return "", fmt.Errorf("error with AIMLAPI after 3 attempts: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return "", fmt.Errorf("error reading AIMLAPI response: %v", err)
     }
-    fmt.Println("Raw response from AIMLAPI (status %d): %s", resp.StatusCode, string(body))
-
     var aimlResult struct {
         Choices []struct {
             Message struct {
@@ -163,15 +139,14 @@ func getAIMLAPIResponse(aimlKey string, client *http.Client, prompt string) (str
         Error string `json:"error"`
     }
     if err := json.Unmarshal(body, &aimlResult); err != nil {
-        return "", fmt.Errorf("error parsing AIMLAPI response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("error parsing AIMLAPI response: %v", err)
     }
     if aimlResult.Error != "" {
         return "", fmt.Errorf("error from AIMLAPI: %s", aimlResult.Error)
     }
     if len(aimlResult.Choices) == 0 || aimlResult.Choices[0].Message.Content == "" {
-        return "", fmt.Errorf("no valid response from AIMLAPI: %s", string(body))
+        return "", fmt.Errorf("no valid response from AIMLAPI")
     }
-
     return aimlResult.Choices[0].Message.Content, nil
 }
 
@@ -179,61 +154,41 @@ func getHuggingFaceResponse(hfKey string, client *http.Client, prompt string) (s
     if hfKey == "" {
         return "", fmt.Errorf("HUGGINGFACE_API_KEY is not set")
     }
-
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
-    logLimit := 100
-    if len(prompt) < logLimit {
-        logLimit = len(prompt)
-    }
-    fmt.Println("Sending request to Hugging Face with prompt (first 100 chars):", prompt[:logLimit], "...")
-
     payload := fmt.Sprintf(`{"inputs": "%s", "parameters": {"max_length": 500, "temperature": 0.7, "top_p": 0.9}}`, prompt)
     req, err := http.NewRequest("POST", "https://api-inference.huggingface.co/models/distilgpt2", strings.NewReader(payload))
     if err != nil {
         return "", fmt.Errorf("error creating request to Hugging Face: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+hfKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with Hugging Face (attempt %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
         return "", fmt.Errorf("error with Hugging Face after 3 attempts: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return "", fmt.Errorf("error reading Hugging Face response: %v", err)
     }
-    fmt.Println("Raw response from Hugging Face (status %d): %s", resp.StatusCode, string(body))
-
     var hfResult []struct {
         GeneratedText string `json:"generated_text"`
     }
     if err := json.Unmarshal(body, &hfResult); err != nil {
-        var errorResult struct {
-            Error string `json:"error"`
-        }
-        if json.Unmarshal(body, &errorResult) == nil && errorResult.Error != "" {
-            return "", fmt.Errorf("error from Hugging Face: %s", errorResult.Error)
-        }
-        return "", fmt.Errorf("error parsing Hugging Face response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("error parsing Hugging Face response: %v", err)
     }
     if len(hfResult) == 0 || hfResult[0].GeneratedText == "" {
-        return "", fmt.Errorf("no valid response from Hugging Face: %s", string(body))
+        return "", fmt.Errorf("no valid response from Hugging Face")
     }
-
     generatedText := strings.TrimPrefix(hfResult[0].GeneratedText, prompt)
     return strings.TrimSpace(generatedText), nil
 }
@@ -242,45 +197,32 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
     if mistralKey == "" {
         return "", fmt.Errorf("MISTRAL_API_KEY is not set")
     }
-
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
-    logLimit := 100
-    if len(prompt) < logLimit {
-        logLimit = len(prompt)
-    }
-    fmt.Println("Sending request to Mistral with prompt (first 100 chars):", prompt[:logLimit], "...")
-
     payload := fmt.Sprintf(`{"model": "mistral-small-latest", "messages": [{"role": "user", "content": "%s"}], "max_tokens": 1000, "temperature": 0.7}`, prompt)
     req, err := http.NewRequest("POST", "https://api.mistral.ai/v1/chat/completions", strings.NewReader(payload))
     if err != nil {
         return "", fmt.Errorf("error creating request to Mistral: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+mistralKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with Mistral (attempt %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
         return "", fmt.Errorf("error with Mistral after 3 attempts: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return "", fmt.Errorf("error reading Mistral response: %v", err)
     }
-    fmt.Println("Raw response from Mistral (status %d): %s", resp.StatusCode, string(body))
-
     var mistralResult struct {
         Choices []struct {
             Message struct {
@@ -290,15 +232,14 @@ func getMistralResponse(mistralKey string, client *http.Client, prompt string) (
         Error string `json:"error"`
     }
     if err := json.Unmarshal(body, &mistralResult); err != nil {
-        return "", fmt.Errorf("error parsing Mistral response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("error parsing Mistral response: %v", err)
     }
     if mistralResult.Error != "" {
         return "", fmt.Errorf("error from Mistral: %s", mistralResult.Error)
     }
     if len(mistralResult.Choices) == 0 || mistralResult.Choices[0].Message.Content == "" {
-        return "", fmt.Errorf("no valid response from Mistral: %s", string(body))
+        return "", fmt.Errorf("no valid response from Mistral")
     }
-
     return mistralResult.Choices[0].Message.Content, nil
 }
 
@@ -353,58 +294,45 @@ func getDeepSeekResponse(client *http.Client, deepSeekKey string, messages []ope
         } `json:"choices"`
     }
     if err := json.Unmarshal(bodyResp, &result); err != nil {
-        return "", fmt.Errorf("error parsing JSON: %v, raw response: %s", err, string(bodyResp))
+        return "", fmt.Errorf("error parsing JSON: %v", err)
     }
     if len(result.Choices) > 0 {
         return result.Choices[0].Message.Content, nil
     }
-    return "", fmt.Errorf("no valid response from DeepSeek: %s", string(bodyResp))
+    return "", fmt.Errorf("no valid response from DeepSeek")
 }
 
 func getCohereResponse(cohereKey string, client *http.Client, prompt string) (string, error) {
     if cohereKey == "" {
         return "", fmt.Errorf("COHERE_API_KEY is not set")
     }
-
     prompt = strings.ReplaceAll(prompt, "\n", " ")
     prompt = strings.ReplaceAll(prompt, "\"", "\\\"")
-    logLimit := 100
-    if len(prompt) < logLimit {
-        logLimit = len(prompt)
-    }
-    fmt.Println("Sending request to Cohere with prompt (first 100 chars):", prompt[:logLimit], "...")
-
-    fullPrompt := fmt.Sprintf("Rispondi esclusivamente in italiano. Non usare altre lingue, nemmeno per frasi brevi o parole singole. Se non puoi rispondere in italiano, restituisci un messaggio di errore in italiano. Domanda: %s", prompt)
+    fullPrompt := fmt.Sprintf("Rispondi esclusivamente in italiano. Non usare altre lingue, nemmeno per frasi brevi o parole singole. Domanda: %s", prompt)
     payload := fmt.Sprintf(`{"model": "command", "prompt": "%s", "max_tokens": 1000, "temperature": 0.7}`, fullPrompt)
     req, err := http.NewRequest("POST", "https://api.cohere.ai/v1/generate", strings.NewReader(payload))
     if err != nil {
         return "", fmt.Errorf("error creating request to Cohere: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+cohereKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     var resp *http.Response
     for attempt := 1; attempt <= 3; attempt++ {
         resp, err = client.Do(req)
         if err == nil {
             break
         }
-        fmt.Printf("Error with Cohere (attempt %d): %v\n", attempt, err)
         time.Sleep(time.Second * time.Duration(attempt))
     }
     if err != nil {
         return "", fmt.Errorf("error with Cohere after 3 attempts: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return "", fmt.Errorf("error reading Cohere response: %v", err)
     }
-    fmt.Println("Raw response from Cohere (status %d): %s", resp.StatusCode, string(body))
-
     var cohereResult struct {
         Generations []struct {
             Text string `json:"text"`
@@ -414,28 +342,21 @@ func getCohereResponse(cohereKey string, client *http.Client, prompt string) (st
         } `json:"error"`
     }
     if err := json.Unmarshal(body, &cohereResult); err != nil {
-        return "", fmt.Errorf("error parsing Cohere response: %v, raw response: %s", err, string(body))
+        return "", fmt.Errorf("error parsing Cohere response: %v", err)
     }
     if cohereResult.Error.Message != "" {
         return "", fmt.Errorf("error from Cohere API: %s", cohereResult.Error.Message)
     }
     if len(cohereResult.Generations) == 0 || cohereResult.Generations[0].Text == "" {
-        return "", fmt.Errorf("no valid response from Cohere: %s", string(body))
+        return "", fmt.Errorf("no valid response from Cohere")
     }
-
-    responseText := cohereResult.Generations[0].Text
-    if strings.Contains(strings.ToLower(responseText), " trout ") || strings.Contains(strings.ToLower(responseText), " fish ") {
-        return "", fmt.Errorf("Cohere ha risposto in inglese nonostante l'istruzione: %s", responseText)
-    }
-
-    return responseText, nil
+    return cohereResult.Generations[0].Text, nil
 }
 
 func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]float64, error) {
     if cohereKey == "" {
         return nil, fmt.Errorf("COHERE_API_KEY is not set")
     }
-
     text = strings.ReplaceAll(text, "\n", " ")
     text = strings.ReplaceAll(text, "\"", "\\\"")
     payload := fmt.Sprintf(`{"texts": ["%s"], "model": "embed-multilingual-v3.0", "input_type": "search_document"}`, text)
@@ -443,23 +364,18 @@ func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]f
     if err != nil {
         return nil, fmt.Errorf("error creating request to Cohere Embed: %v", err)
     }
-
     req.Header.Set("Authorization", "Bearer "+cohereKey)
     req.Header.Set("Content-Type", "application/json")
     req.Header.Set("Accept", "application/json")
-
     resp, err := client.Do(req)
     if err != nil {
         return nil, fmt.Errorf("error with Cohere Embed request: %v", err)
     }
     defer resp.Body.Close()
-
     body, err := io.ReadAll(resp.Body)
     if err != nil {
         return nil, fmt.Errorf("error reading Cohere Embed response: %v", err)
     }
-    fmt.Println("Raw response from Cohere Embed (status %d): %s", resp.StatusCode, string(body))
-
     var embedResult struct {
         Embeddings [][]float64 `json:"embeddings"`
         Error      struct {
@@ -467,15 +383,14 @@ func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]f
         } `json:"error"`
     }
     if err := json.Unmarshal(body, &embedResult); err != nil {
-        return nil, fmt.Errorf("error parsing Cohere Embed response: %v, raw response: %s", err, string(body))
+        return nil, fmt.Errorf("error parsing Cohere Embed response: %v", err)
     }
     if embedResult.Error.Message != "" {
         return nil, fmt.Errorf("error from Cohere Embed API: %s", embedResult.Error.Message)
     }
     if len(embedResult.Embeddings) == 0 || len(embedResult.Embeddings[0]) == 0 {
-        return nil, fmt.Errorf("no valid embedding from Cohere: %s", string(body))
+        return nil, fmt.Errorf("no valid embedding from Cohere")
     }
-
     return embedResult.Embeddings[0], nil
 }
 
@@ -483,7 +398,6 @@ func cosineSimilarity(vec1, vec2 []float64) float64 {
     if len(vec1) != len(vec2) {
         return 0.0
     }
-
     dotProduct := 0.0
     norm1 := 0.0
     norm2 := 0.0
@@ -492,19 +406,10 @@ func cosineSimilarity(vec1, vec2 []float64) float64 {
         norm1 += vec1[i] * vec1[i]
         norm2 += vec2[i] * vec2[i]
     }
-
     if norm1 == 0 || norm2 == 0 {
         return 0.0
     }
-
     return dotProduct / (math.Sqrt(norm1) * math.Sqrt(norm2))
-}
-
-func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
 }
 
 func main() {
@@ -563,8 +468,6 @@ func main() {
     if port == "" {
         fmt.Println("PORT not specified, using default :8080")
         port = "8080"
-    } else {
-        fmt.Printf("PORT specified from environment: %s\n", port)
     }
 
     openAIClient := openai.NewClient(openAIKey)
@@ -576,20 +479,19 @@ func main() {
         fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
     })
 
-http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-    fmt.Println("Received request on /")
-    sessionID, err := r.Cookie("session_id")
-    if err != nil || sessionID == nil {
-        sessionID = &http.Cookie{
-            Name:  "session_id",
-            Value: uuid.New().String(),
-            Path:  "/",
+    http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+        fmt.Println("Received request on /")
+        sessionID, err := r.Cookie("session_id")
+        if err != nil || sessionID == nil {
+            sessionID = &http.Cookie{
+                Name:  "session_id",
+                Value: uuid.New().String(),
+                Path:  "/",
+            }
+            http.SetCookie(w, sessionID)
         }
-        http.SetCookie(w, sessionID)
-    }
-    w.Header().Set("Content-Type", "text/html; charset=utf-8")
-    fmt.Fprintf(w, `
-<!DOCTYPE html>
+        w.Header().Set("Content-Type", "text/html; charset=utf-8")
+        fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
     <title>ARCA-b Chat AI</title>
@@ -744,25 +646,12 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             box-shadow: 0 0 15px #00ff00;
         }
         .processing {
-            width: 30px;
-            height: 30px;
+            width: 100%;
+            text-align: center;
             margin: 5px 0;
-            position: relative;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        .processing::before {
-            content: "A";
             color: #00ff00;
-            font-size: 1.5em;
+            font-size: 1.2em;
             text-shadow: 0 0 10px #00ff00;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
         }
         .details {
             display: none;
@@ -958,6 +847,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     message: conv.user,
+                    response: conv.response,
                     language: languageSelect.value,
                     saveConversation: true,
                     conversationIndex: index
@@ -965,34 +855,28 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 credentials: "include"
             }).then(response => response.json()).then(data => {
                 const conversationId = data.conversationId;
+                if (!conversationId) throw new Error("conversationId not found");
                 const shareLink = "https://arcab-global-ai.org/conversation/" + conversationId;
                 navigator.clipboard.writeText(shareLink).then(function() {
                     alert("Conversation link copied to clipboard: " + shareLink);
                 });
             }).catch(err => {
-                console.error("Error generating share link:", err);
-                alert("Error generating share link. Please try copying the text instead.");
+                alert("Error generating share link: " + err.message);
             });
         }
 
         function showProcessingMessage() {
-            console.log("Showing processing message...");
             const div = document.createElement("div");
             div.id = "processing-message";
             div.className = "processing";
+            div.textContent = "Processing...";
             chat.appendChild(div);
             chat.scrollTop = chat.scrollHeight;
-            console.log("Processing div added to DOM:", div);
-            return div;
         }
 
         function removeProcessingMessage() {
-            console.log("Removing processing message...");
             const processingMessage = document.getElementById("processing-message");
-            if (processingMessage) {
-                processingMessage.remove();
-                console.log("Processing message removed from DOM");
-            }
+            if (processingMessage) processingMessage.remove();
         }
 
         async function sendMessage() {
@@ -1007,7 +891,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
             showProcessingMessage();
             try {
-                const minDisplayTime = new Promise(function(resolve) { setTimeout(resolve, 1000); });
+                const minDisplayTime = new Promise(resolve => setTimeout(resolve, 1000));
                 const response = await fetch("/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -1018,7 +902,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                     credentials: "include"
                 });
                 const answer = await Promise.all([response.json(), minDisplayTime]);
-                console.log("Response received from /chat:", answer[0]);
                 removeProcessingMessage();
 
                 conversationHistory.push({ user: question, response: answer[0].response });
@@ -1026,7 +909,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 const contributions = answer[0].contributions || "";
                 addMessage(answer[0].response, false, rawResponses, contributions, conversationHistory.length - 1);
             } catch (error) {
-                console.error("Error during request:", error);
                 removeProcessingMessage();
                 addMessage("Error: I couldn't get a response. " + error.message, false);
             }
@@ -1036,7 +918,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             fetch("/clear", {
                 method: "POST",
                 credentials: "include"
-            }).then(function() {
+            }).then(() => {
                 chat.innerHTML = "";
                 conversationHistory = [];
             });
@@ -1049,10 +931,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 </body>
 </html>
 `)
-})
+    })
+
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /donate")
-        w.Header().Set("Content-Type", "text/html; charset=utf-8")
         fmt.Fprintf(w, `<!DOCTYPE html>
 <html>
 <head>
@@ -1063,16 +944,15 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         body { font-family: Arial, sans-serif; margin: 20px; text-align: center; }
         button { padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 1em; margin: 10px; }
         button:hover { background-color: #0056b3; }
-        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; font-family: monospace; }
-        .crypto-address { margin: 10px 0; word-wrap: break-word; }
+        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
     </style>
 </head>
 <body>
     <h1>Support ARCA-b Chat AI</h1>
     <p>Your donations help us improve the project and keep it free from censorship and propaganda. Thank you!</p>
     <p>Please send your donation to one of the following cryptocurrency addresses:</p>
-    <div class="crypto-address"><strong>Bitcoin (BTC):</strong> <code>38JkmWhTFYosecu45ewoheYMjJw68sHSj3</code></div>
-    <div class="crypto-address"><strong>USDT (Ethereum):</strong> <code>0x71ECB5C451ED648583722F5834fF6490D4570f7d</code></div>
+    <div><strong>Bitcoin (BTC):</strong> <code>38JkmWhTFYosecu45ewoheYMjJw68sHSj3</code></div>
+    <div><strong>USDT (Ethereum):</strong> <code>0x71ECB5C451ED648583722F5834fF6490D4570f7d</code></div>
     <p><small>After donating, contact us at <a href="mailto:arcab.founder@gmail.com">arcab.founder@gmail.com</a> with your session ID to unlock premium features.</small></p>
     <a href="/"><button>Back to Chat</button></a>
 </body>
@@ -1096,13 +976,11 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
     })
 
     http.HandleFunc("/conversation/", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Println("Received request on /conversation/")
         id := strings.TrimPrefix(r.URL.Path, "/conversation/")
         if id == "" {
             http.Error(w, "Conversation ID not provided", http.StatusBadRequest)
             return
         }
-
         mutex.Lock()
         conversation, exists := conversations[id]
         mutex.Unlock()
@@ -1110,7 +988,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             http.Error(w, "Conversation not found", http.StatusNotFound)
             return
         }
-
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
         fmt.Fprintf(w, `
 <!DOCTYPE html>
@@ -1120,53 +997,12 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body {
-            font-family: 'Courier New', monospace;
-            margin: 0;
-            padding: 20px;
-            background-color: #0d0d0d;
-            color: #00ff00;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
-            overflow-x: hidden;
-        }
-        h1 {
-            font-size: 1.8em;
-            margin-bottom: 15px;
-            text-align: center;
-            text-shadow: 0 0 10px #00ff00;
-            animation: glitch 2s linear infinite;
-        }
-        @keyframes glitch {
-            2%, 64% { transform: translate(2px, 0) skew(0deg); }
-            4%, 60% { transform: translate(-2px, 0) skew(0deg); }
-            62% { transform: translate(0, 0) skew(5deg); }
-        }
-        .conversation {
-            margin: auto;
-            padding: 20px;
-            border: 1px solid #00ff00;
-            border-radius: 10px;
-            background-color: #1a1a1a;
-            box-shadow: 0 0 15px rgba(0, 255, 0, 0.3);
-            max-width: 800px;
-            color: #00ff00;
-            text-shadow: 0 0 5px #00ff00;
-        }
-        .conversation p {
-            margin: 10px 0;
-            line-height: 1.5;
-        }
-        a {
-            color: #1e90ff;
-            text-decoration: none;
-            text-shadow: 0 0 5px #1e90ff;
-        }
-        a:hover {
-            color: #00ff00;
-            text-shadow: 0 0 10px #00ff00;
-        }
+        body { font-family: 'Courier New', monospace; margin: 0; padding: 20px; background-color: #0d0d0d; color: #00ff00; }
+        h1 { font-size: 1.8em; text-align: center; text-shadow: 0 0 10px #00ff00; }
+        .conversation { margin: auto; padding: 20px; border: 1px solid #00ff00; border-radius: 10px; background-color: #1a1a1a; max-width: 800px; }
+        .conversation p { margin: 10px 0; line-height: 1.5; }
+        a { color: #1e90ff; text-decoration: none; }
+        a:hover { color: #00ff00; }
     </style>
 </head>
 <body>
@@ -1188,24 +1024,23 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
             return
         }
-
         sessionID, err := r.Cookie("session_id")
         if err != nil {
             http.Error(w, "Error: Session not found", http.StatusBadRequest)
             return
         }
-
-        var req struct {
-            Message           string `json:"message"`
-            Style             string `json:"style"`
-            Language          string `json:"language"`
-            SaveConversation  bool   `json:"saveConversation"`
-            ConversationIndex int    `json:"conversationIndex"`
+        var req ChatRequest
+        body, err := io.ReadAll(r.Body)
+        if err != nil {
+            http.Error(w, "Error reading request body", http.StatusBadRequest)
+            return
         }
-        if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        fmt.Printf("Request body: %s\n", string(body))
+        if err := json.Unmarshal(body, &req); err != nil {
             http.Error(w, "Invalid request", http.StatusBadRequest)
             return
         }
+        fmt.Printf("Parsed request: %+v\n", req)
 
         mutex.Lock()
         tracker, exists := requestTrackers[sessionID.Value]
@@ -1217,20 +1052,16 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             }
             requestTrackers[sessionID.Value] = tracker
         }
-
         if !tracker.IsPremium {
             if time.Since(tracker.LastResetHour) > time.Hour {
                 tracker.HourlyCount = 0
                 tracker.LastResetHour = time.Now()
             }
             tracker.HourlyCount++
-            fmt.Printf("User %s: %d requests this hour\n", sessionID.Value, tracker.HourlyCount)
             if tracker.HourlyCount > hourlyLimit {
                 mutex.Unlock()
                 response := ChatResponse{
-                    Response:      "Hai raggiunto il limite orario di 15 domande. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.",
-                    RawResponses:  "",
-                    Contributions: "",
+                    Response: "Hai raggiunto il limite orario di 15 domande. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.",
                 }
                 w.Header().Set("Content-Type", "application/json")
                 json.NewEncoder(w).Encode(response)
@@ -1256,12 +1087,23 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         })
         mutex.Unlock()
 
+        if req.SaveConversation {
+            conversationID := uuid.New().String()
+            mutex.Lock()
+            conversations[conversationID] = ChatResponse{
+                Response: req.Response,
+            }
+            mutex.Unlock()
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]string{"conversationId": conversationID})
+            return
+        }
+
         type aiResponse struct {
             name    string
             content string
             err     error
         }
-
         responses := make(chan aiResponse, 5)
         var wg sync.WaitGroup
 
@@ -1281,13 +1123,12 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                     Messages: messagesWithLang,
                 })
                 if err != nil {
-                    fmt.Printf("Errore con OpenAI: %v\n", err)
                     answer = fmt.Sprintf("Errore: OpenAI non ha risposto. (in %s)", language)
                 } else {
                     answer = resp.Choices[0].Message.Content
                 }
             }
-            responses <- aiResponse{name: "OpenAI", content: answer, err: nil}
+            responses <- aiResponse{name: "OpenAI", content: answer}
         }()
 
         wg.Add(1)
@@ -1295,10 +1136,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             defer wg.Done()
             answer, err := getDeepSeekResponse(client, deepSeekKey, session.History, language)
             if err != nil {
-                fmt.Printf("Errore con DeepSeek: %v\n", err)
                 answer = fmt.Sprintf("Errore: DeepSeek non ha risposto. (in %s)", language)
             }
-            responses <- aiResponse{name: "DeepSeek", content: answer, err: err}
+            responses <- aiResponse{name: "DeepSeek", content: answer}
         }()
 
         wg.Add(1)
@@ -1315,16 +1155,10 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                 historyForGemini += fmt.Sprintf("user: Respond in %s: %s\n", language, req.Message)
                 req, err := http.NewRequest("POST", "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key="+geminiKey,
                     strings.NewReader(fmt.Sprintf(`{"contents":[{"parts":[{"text":"%s"}]}]}`, historyForGemini)))
-                if err != nil {
-                    fmt.Printf("Errore nella creazione della richiesta a Gemini: %v\n", err)
-                    answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
-                } else {
+                if err == nil {
                     req.Header.Set("Content-Type", "application/json")
                     resp, err := client.Do(req)
-                    if err != nil {
-                        fmt.Printf("Errore con Gemini: %v\n", err)
-                        answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
-                    } else {
+                    if err == nil {
                         defer resp.Body.Close()
                         var geminiResult struct {
                             Candidates []struct {
@@ -1335,18 +1169,19 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                                 } `json:"content"`
                             } `json:"candidates"`
                         }
-                        if err := json.NewDecoder(resp.Body).Decode(&geminiResult); err != nil {
-                            fmt.Printf("Errore nel parsing della risposta di Gemini: %v\n", err)
-                            answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
-                        } else if len(geminiResult.Candidates) == 0 || len(geminiResult.Candidates[0].Content.Parts) == 0 {
-                            answer = fmt.Sprintf("Errore: Gemini non ha fornito una risposta valida. (in %s)", language)
-                        } else {
+                        if err := json.NewDecoder(resp.Body).Decode(&geminiResult); err == nil && len(geminiResult.Candidates) > 0 && len(geminiResult.Candidates[0].Content.Parts) > 0 {
                             answer = geminiResult.Candidates[0].Content.Parts[0].Text
+                        } else {
+                            answer = fmt.Sprintf("Errore: Gemini non ha fornito una risposta valida. (in %s)", language)
                         }
+                    } else {
+                        answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
                     }
+                } else {
+                    answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
                 }
             }
-            responses <- aiResponse{name: "Gemini", content: answer, err: nil}
+            responses <- aiResponse{name: "Gemini", content: answer}
         }()
 
         wg.Add(1)
@@ -1358,10 +1193,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             }
             answer, err := getMistralResponse(mistralKey, client, prompt)
             if err != nil {
-                fmt.Printf("Errore con Mistral: %v\n", err)
                 answer = fmt.Sprintf("Errore: Mistral non ha risposto. (in %s)", language)
             }
-            responses <- aiResponse{name: "Mistral", content: answer, err: err}
+            responses <- aiResponse{name: "Mistral", content: answer}
         }()
 
         wg.Add(1)
@@ -1373,10 +1207,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             }
             answer, err := getCohereResponse(cohereKey, client, prompt)
             if err != nil {
-                fmt.Printf("Errore con Cohere: %v\n", err)
                 answer = fmt.Sprintf("Errore: Cohere non ha risposto. (in %s)", language)
             }
-            responses <- aiResponse{name: "Cohere", content: answer, err: err}
+            responses <- aiResponse{name: "Cohere", content: answer}
         }()
 
         go func() {
@@ -1390,7 +1223,7 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
         for response := range responses {
             wholeResponse += fmt.Sprintf("%s:\n%s\n\n", response.name, response.content)
-            if response.err == nil && !strings.HasPrefix(response.content, "Errore:") {
+            if !strings.HasPrefix(response.content, "Errore:") {
                 validResponses = append(validResponses, response.content)
                 embedding, err := getCohereEmbedding(cohereKey, client, response.content)
                 if err == nil {
@@ -1412,7 +1245,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                     embeddings = append(embeddings, embedding)
                 }
             }
-
             if len(embeddings) == 0 {
                 selectedAnswer = validResponses[0]
             } else {
@@ -1427,13 +1259,11 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                         }
                     }
                 }
-
                 if len(validResponses) == 1 {
                     selectedAnswer = validResponses[0]
                 } else {
                     selectedAnswer = fmt.Sprintf("%s\n%s", validResponses[bestPair[0]], validResponses[bestPair[1]])
                 }
-
                 totalSimilarity := 0.0
                 contributionMap := make(map[string]float64)
                 for name, embedding := range responseEmbeddings {
@@ -1444,7 +1274,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
                     contributionMap[name] = similarity
                     totalSimilarity += similarity
                 }
-
                 for name, similarity := range contributionMap {
                     percentage := (similarity / totalSimilarity) * 100
                     contributions += fmt.Sprintf("%s: %.0f%%\n", name, percentage)
@@ -1458,16 +1287,6 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
             Contributions: contributions,
         }
 
-        if req.SaveConversation {
-            conversationID := uuid.New().String()
-            mutex.Lock()
-            conversations[conversationID] = response
-            mutex.Unlock()
-            w.Header().Set("Content-Type", "application/json")
-            json.NewEncoder(w).Encode(map[string]string{"conversationId": conversationID})
-            return
-        }
-
         mutex.Lock()
         session.History = append(session.History, openai.ChatCompletionMessage{
             Role:    openai.ChatMessageRoleAssistant,
@@ -1476,14 +1295,9 @@ http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         mutex.Unlock()
 
         w.Header().Set("Content-Type", "application/json")
-        if err := json.NewEncoder(w).Encode(response); err != nil {
-            fmt.Printf("Errore nella codifica della risposta JSON: %v\n", err)
-            http.Error(w, "Errore del server", http.StatusInternalServerError)
-        }
+        json.NewEncoder(w).Encode(response)
     })
 
     fmt.Printf("Starting server on port %s...\n", port)
-    if err := http.ListenAndServe(":"+port, nil); err != nil {
-        fmt.Printf("Server error: %v\n", err)
-    }
+    http.ListenAndServe(":"+port, nil)
 }
