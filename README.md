@@ -13,3 +13,4 @@ We’re looking for contributors and users to help shape the future of transpare
 
 ## Support the Project
 If you like ARCA-b, consider supporting us via the [Donate page](https://arcab-global-ai.org/donate) to keep the project running and growing.
+# Updated profile name
