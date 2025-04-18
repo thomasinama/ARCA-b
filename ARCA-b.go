@@ -1,6 +1,7 @@
 package main
 
 import (
+    "bytes"
     "context"
     "encoding/json"
     "fmt"
@@ -49,6 +50,83 @@ var (
     mutex           = &sync.Mutex{}
     hourlyLimit     = 15
 )
+
+func getNewsContext(newsAPIKey string, client *http.Client, query string, language string) (string, error) {
+    if newsAPIKey == "" {
+        return "", fmt.Errorf("NEWS_API_KEY is not set")
+    }
+
+    query = strings.ReplaceAll(query, " ", "+")
+    newsLanguage := "it"
+    if language != "Italiano" {
+        newsLanguage = "en"
+    }
+    url := fmt.Sprintf("https://newsapi.org/v2/everything?q=%s&sortBy=relevancy&language=%s&pageSize=3&apiKey=%s", query, newsLanguage, newsAPIKey)
+
+    req, err := http.NewRequest("GET", url, nil)
+    if err != nil {
+        return "", fmt.Errorf("error creating request to NewsAPI: %v", err)
+    }
+    req.Header.Set("Accept", "application/json")
+
+    var resp *http.Response
+    for attempt := 1; attempt <= 3; attempt++ {
+        resp, err = client.Do(req)
+        if err == nil {
+            break
+        }
+        time.Sleep(time.Second * time.Duration(attempt))
+    }
+    if err != nil {
+        if newsLanguage == "it" {
+            url = fmt.Sprintf("https://newsapi.org/v2/everything?q=%s&sortBy=relevancy&language=en&pageSize=3&apiKey=%s", query, newsAPIKey)
+            req, _ = http.NewRequest("GET", url, nil)
+            req.Header.Set("Accept", "application/json")
+            resp, err = client.Do(req)
+        }
+        if err != nil {
+            return "", fmt.Errorf("error with NewsAPI after 3 attempts: %v", err)
+        }
+    }
+    defer resp.Body.Close()
+
+    body, err := io.ReadAll(resp.Body)
+    if err != nil {
+        return "", fmt.Errorf("error reading NewsAPI response: %v", err)
+    }
+
+    var newsResult struct {
+        Status       string `json:"status"`
+        TotalResults int    `json:"totalResults"`
+        Articles     []struct {
+            Title       string `json:"title"`
+            Description string `json:"description"`
+            Content     string `json:"content"`
+            PublishedAt string `json:"publishedAt"`
+        } `json:"articles"`
+        Message string `json:"message"`
+    }
+    if err := json.Unmarshal(body, &newsResult); err != nil {
+        return "", fmt.Errorf("error parsing NewsAPI response: %v", err)
+    }
+    if newsResult.Status != "ok" {
+        return "", fmt.Errorf("error from NewsAPI: %s", newsResult.Message)
+    }
+    if len(newsResult.Articles) == 0 {
+        return "No recent news found for the query.", nil
+    }
+
+    var response strings.Builder
+    response.WriteString("Recent News Context:\n")
+    for i, article := range newsResult.Articles {
+        response.WriteString(fmt.Sprintf("%d. %s\n", i+1, article.Title))
+        response.WriteString(fmt.Sprintf("Published %s\n", article.PublishedAt))
+        if article.Description != "" {
+            response.WriteString(fmt.Sprintf("%s\n", article.Description))
+        }
+    }
+    return response.String(), nil
+}
 
 func getDeepInfraResponse(deepInfraKey string, client *http.Client, prompt string) (string, error) {
     if deepInfraKey == "" {
@@ -421,6 +499,7 @@ func main() {
     huggingFaceKey := os.Getenv("HUGGINGFACE_API_KEY")
     mistralKey := os.Getenv("MISTRAL_API_KEY")
     cohereKey := os.Getenv("COHERE_API_KEY")
+    newsAPIKey := os.Getenv("NEWS_API_KEY")
 
     fmt.Printf("Loading API keys for ARCA-b...\n")
     if openAIKey == "" {
@@ -463,6 +542,11 @@ func main() {
     } else {
         fmt.Println("COHERE_API_KEY loaded successfully")
     }
+    if newsAPIKey == "" {
+        fmt.Println("Error: NEWS_API_KEY is not set")
+    } else {
+        fmt.Println("NEWS_API_KEY loaded successfully")
+    }
 
     port := os.Getenv("PORT")
     if port == "" {
@@ -472,6 +556,141 @@ func main() {
 
     openAIClient := openai.NewClient(openAIKey)
     client := &http.Client{Timeout: 30 * time.Second}
+
+    // Speech-to-Text Handler
+    http.HandleFunc("/speech-to-text", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+
+        // Parse the multipart form to get the audio file
+        err := r.ParseMultipartForm(10 << 20) // 10 MB limit
+        if err != nil {
+            http.Error(w, "Error parsing multipart form: "+err.Error(), http.StatusBadRequest)
+            return
+        }
+
+        file, _, err := r.FormFile("audio")
+        if err != nil {
+            http.Error(w, "Error retrieving audio file: "+err.Error(), http.StatusBadRequest)
+            return
+        }
+        defer file.Close()
+
+        // Read the audio data
+        audioData, err := io.ReadAll(file)
+        if err != nil {
+            http.Error(w, "Error reading audio file: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Use OpenAI Whisper to transcribe the audio
+        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        defer cancel()
+
+        resp, err := openAIClient.CreateTranscription(ctx, openai.AudioRequest{
+            Model:    "whisper-1", // Updated model name
+            FilePath: "audio.webm",
+            Reader:   bytes.NewReader(audioData),
+            Format:   openai.AudioResponseFormatJSON,
+        })
+        if err != nil {
+            http.Error(w, "Error transcribing audio: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Send the transcribed text back to the client
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{
+            "text": resp.Text,
+        })
+    })
+// Text-to-Speech Handler
+http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+        return
+    }
+
+    var req struct {
+        Text     string `json:"text"`
+        Language string `json:"language"`
+    }
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, "Invalid request body", http.StatusBadRequest)
+        return
+    }
+
+    // Use OpenAI TTS to convert text to speech
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+
+    voice := "alloy"
+    if req.Language == "Italiano" {
+        voice = "nova"
+    }
+
+    audioResp, err := openAIClient.CreateSpeech(ctx, openai.CreateSpeechRequest{
+        Model: "tts-1",
+        Input: req.Text,
+        Voice: openai.SpeechVoice(voice), // Converti esplicitamente la stringa in SpeechVoice
+    })
+    if err != nil {
+        http.Error(w, "Error generating speech: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+    defer audioResp.Close()
+
+    // Read the audio data
+    audioData, err := io.ReadAll(audioResp)
+    if err != nil {
+        http.Error(w, "Error reading audio data: "+err.Error(), http.StatusInternalServerError)
+        return
+    }
+
+    // Send the audio data back to the client
+    w.Header().Set("Content-Type", "audio/mpeg")
+    w.Write(audioData)
+})
+
+    // File Upload Handler
+    http.HandleFunc("/upload-file", func(w http.ResponseWriter, r *http.Request) {
+        if r.Method != http.MethodPost {
+            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+            return
+        }
+
+        // Parse the multipart form to get the file
+        err := r.ParseMultipartForm(10 << 20) // 10 MB limit
+        if err != nil {
+            http.Error(w, "Error parsing multipart form: "+err.Error(), http.StatusBadRequest)
+            return
+        }
+
+        file, _, err := r.FormFile("file")
+        if err != nil {
+            http.Error(w, "Error retrieving file: "+err.Error(), http.StatusBadRequest)
+            return
+        }
+        defer file.Close()
+
+        // Read the file content
+        fileContent, err := io.ReadAll(file)
+        if err != nil {
+            http.Error(w, "Error reading file: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Convert the file content to string (assuming it's text)
+        text := string(fileContent)
+
+        // Send the extracted text back to the client
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(map[string]string{
+            "text": text,
+        })
+    })
 
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /health")
@@ -634,16 +853,20 @@ func main() {
             color: #000000;
             box-shadow: 0 0 15px #00ff00;
         }
-        .save-button, .copy-button, .link-button {
+        .speak-button, .listen-button, .upload-button, .save-button, .copy-button, .link-button {
             padding: 5px 10px;
             font-size: 0.8em;
             margin-left: 10px;
             background-color: #ff00ff;
             box-shadow: 0 0 10px #ff00ff;
         }
-        .save-button:hover, .copy-button:hover, .link-button:hover {
+        .speak-button:hover, .listen-button:hover, .upload-button:hover, .save-button:hover, .copy-button:hover, .link-button:hover {
             background-color: #00ff00;
             box-shadow: 0 0 15px #00ff00;
+        }
+        .recording {
+            background-color: #ff0000;
+            box-shadow: 0 0 10px #ff0000;
         }
         .processing {
             width: 100%;
@@ -712,7 +935,7 @@ func main() {
             button { width: 100%; padding: 12px; font-size: 0.9em; }
             .button-container { flex-direction: column; gap: 10px; align-items: center; }
             .button-container button { width: 100%; max-width: 200px; }
-            .save-button, .copy-button, .link-button { margin-left: 0; margin-top: 5px; }
+            .speak-button, .listen-button, .upload-button, .save-button, .copy-button, .link-button { margin-left: 0; margin-top: 5px; }
         }
     </style>
 </head>
@@ -741,6 +964,9 @@ func main() {
             <div class="input-container">
                 <input id="input" type="text" placeholder="Write your question...">
                 <button onclick="sendMessage()">Send</button>
+                <button onclick="startRecording()" id="speak-button" class="speak-button">Speak</button>
+                <input type="file" id="file-input" accept=".txt" style="display: none;" onchange="uploadFile()">
+                <button onclick="document.getElementById('file-input').click()" class="upload-button">Upload File</button>
                 <button onclick="clearChat()">Clear Chat</button>
             </div>
         </div>
@@ -750,10 +976,13 @@ func main() {
     </p>
     <script>
         let conversationHistory = [];
+        let mediaRecorder;
+        let audioChunks = [];
 
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
         const languageSelect = document.getElementById("language-select");
+        const speakButton = document.getElementById("speak-button");
 
         if (localStorage.getItem("language")) {
             languageSelect.value = localStorage.getItem("language");
@@ -785,6 +1014,12 @@ func main() {
                 linkButton.className = "link-button";
                 linkButton.onclick = function() { shareConversationLink(index); };
                 div.appendChild(linkButton);
+
+                const listenButton = document.createElement("button");
+                listenButton.textContent = "Listen";
+                listenButton.className = "listen-button";
+                listenButton.onclick = function() { textToSpeech(text, languageSelect.value); };
+                div.appendChild(listenButton);
             }
 
             if (!isUser && contributions && contributions.trim() !== "") {
@@ -822,7 +1057,7 @@ func main() {
 
         function saveConversation(index) {
             const conv = conversationHistory[index];
-            const text = "Utente: " + conv.user + "\nARCA-b: " + conv.response;
+            const text = "User: " + conv.user + "\nARCA-b: " + conv.response;
             const blob = new Blob([text], { type: "text/plain" });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
@@ -834,7 +1069,7 @@ func main() {
 
         function copyConversation(index) {
             const conv = conversationHistory[index];
-            const shareText = "Utente: " + conv.user + "\nARCA-b: " + conv.response + "\n\nProva ARCA-b Chat AI su: https://arcab-global-ai.org";
+            const shareText = "User: " + conv.user + "\nARCA-b: " + conv.response + "\n\nTry ARCA-b Chat AI at: https://arcab-global-ai.org";
             navigator.clipboard.writeText(shareText).then(function() {
                 alert("Conversation text copied to clipboard!");
             });
@@ -879,8 +1114,8 @@ func main() {
             if (processingMessage) processingMessage.remove();
         }
 
-        async function sendMessage() {
-            const question = input.value.trim();
+        async function sendMessage(messageText) {
+            const question = messageText || input.value.trim();
             if (!question) return;
 
             addMessage(question, true);
@@ -922,6 +1157,112 @@ func main() {
                 chat.innerHTML = "";
                 conversationHistory = [];
             });
+        }
+
+        // Speech-to-Text Functionality
+        async function startRecording() {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                alert("Your browser does not support audio recording.");
+                return;
+            }
+
+            speakButton.classList.add("recording");
+            speakButton.textContent = "Recording... (Click to Stop)";
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = function(e) {
+                    audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = async function() {
+                    speakButton.classList.remove("recording");
+                    speakButton.textContent = "Speak";
+
+                    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+                    const formData = new FormData();
+                    formData.append("audio", audioBlob, "recording.webm");
+
+                    try {
+                        const response = await fetch("/speech-to-text", {
+                            method: "POST",
+                            body: formData,
+                        });
+                        const result = await response.json();
+                        if (result.text) {
+                            input.value = result.text;
+                            sendMessage(result.text);
+                        } else {
+                            alert("Error: Could not transcribe audio.");
+                        }
+                    } catch (error) {
+                        alert("Error transcribing audio: " + error.message);
+                    }
+
+                    stream.getTracks().forEach(track => track.stop());
+                };
+
+                mediaRecorder.start();
+                speakButton.onclick = stopRecording;
+            } catch (error) {
+                speakButton.classList.remove("recording");
+                speakButton.textContent = "Speak";
+                alert("Error accessing microphone: " + error.message);
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            }
+        }
+
+        // Text-to-Speech Functionality
+        async function textToSpeech(text, language) {
+            try {
+                const response = await fetch("/text-to-speech", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ text: text, language: language }),
+                });
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                audio.play();
+            } catch (error) {
+                alert("Error playing audio: " + error.message);
+            }
+        }
+
+        // File Upload Functionality
+        async function uploadFile() {
+            const fileInput = document.getElementById("file-input");
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            const formData = new FormData();
+            formData.append("file", file);
+
+            try {
+                const response = await fetch("/upload-file", {
+                    method: "POST",
+                    body: formData,
+                });
+                const result = await response.json();
+                if (result.text) {
+                    input.value = result.text;
+                    sendMessage(result.text);
+                } else {
+                    alert("Error: Could not extract text from file.");
+                }
+            } catch (error) {
+                alert("Error uploading file: " + error.message);
+            }
+
+            fileInput.value = ""; // Reset the file input
         }
 
         input.addEventListener("keypress", function(e) {
@@ -1061,7 +1402,7 @@ func main() {
             if tracker.HourlyCount > hourlyLimit {
                 mutex.Unlock()
                 response := ChatResponse{
-                    Response: "Hai raggiunto il limite orario di 15 domande. Considera di supportarci con una donazione per mantenere il progetto attivo! Visita la pagina <a href=\"/donate\">Dona</a>.",
+                    Response: "You have reached the hourly limit of 15 requests. Please consider supporting us with a donation to keep the project alive! Visit the <a href=\"/donate\">Donate</a> page.",
                 }
                 w.Header().Set("Content-Type", "application/json")
                 json.NewEncoder(w).Encode(response)
@@ -1104,7 +1445,7 @@ func main() {
             content string
             err     error
         }
-        responses := make(chan aiResponse, 5)
+        responses := make(chan aiResponse, 6)
         var wg sync.WaitGroup
 
         wg.Add(1)
@@ -1112,7 +1453,7 @@ func main() {
             defer wg.Done()
             var answer string
             if openAIKey == "" {
-                answer = fmt.Sprintf("Errore: OPENAI_API_KEY non è impostata. (in %s)", language)
+                answer = fmt.Sprintf("Error: OPENAI_API_KEY is not set. (in %s)", language)
             } else {
                 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
                 defer cancel()
@@ -1123,7 +1464,7 @@ func main() {
                     Messages: messagesWithLang,
                 })
                 if err != nil {
-                    answer = fmt.Sprintf("Errore: OpenAI non ha risposto. (in %s)", language)
+                    answer = fmt.Sprintf("Error: OpenAI did not respond. (in %s)", language)
                 } else {
                     answer = resp.Choices[0].Message.Content
                 }
@@ -1136,7 +1477,7 @@ func main() {
             defer wg.Done()
             answer, err := getDeepSeekResponse(client, deepSeekKey, session.History, language)
             if err != nil {
-                answer = fmt.Sprintf("Errore: DeepSeek non ha risposto. (in %s)", language)
+                answer = fmt.Sprintf("Error: DeepSeek did not respond. (in %s)", language)
             }
             responses <- aiResponse{name: "DeepSeek", content: answer}
         }()
@@ -1146,7 +1487,7 @@ func main() {
             defer wg.Done()
             var answer string
             if geminiKey == "" {
-                answer = fmt.Sprintf("Errore: GEMINI_API_KEY non è impostata. (in %s)", language)
+                answer = fmt.Sprintf("Error: GEMINI_API_KEY is not set. (in %s)", language)
             } else {
                 historyForGemini := ""
                 for _, msg := range session.History {
@@ -1172,13 +1513,13 @@ func main() {
                         if err := json.NewDecoder(resp.Body).Decode(&geminiResult); err == nil && len(geminiResult.Candidates) > 0 && len(geminiResult.Candidates[0].Content.Parts) > 0 {
                             answer = geminiResult.Candidates[0].Content.Parts[0].Text
                         } else {
-                            answer = fmt.Sprintf("Errore: Gemini non ha fornito una risposta valida. (in %s)", language)
+                            answer = fmt.Sprintf("Error: Gemini did not provide a valid response. (in %s)", language)
                         }
                     } else {
-                        answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
+                        answer = fmt.Sprintf("Error: Gemini did not respond. (in %s)", language)
                     }
                 } else {
-                    answer = fmt.Sprintf("Errore: Gemini non ha risposto. (in %s)", language)
+                    answer = fmt.Sprintf("Error: Gemini did not respond. (in %s)", language)
                 }
             }
             responses <- aiResponse{name: "Gemini", content: answer}
@@ -1193,7 +1534,7 @@ func main() {
             }
             answer, err := getMistralResponse(mistralKey, client, prompt)
             if err != nil {
-                answer = fmt.Sprintf("Errore: Mistral non ha risposto. (in %s)", language)
+                answer = fmt.Sprintf("Error: Mistral did not respond. (in %s)", language)
             }
             responses <- aiResponse{name: "Mistral", content: answer}
         }()
@@ -1207,9 +1548,25 @@ func main() {
             }
             answer, err := getCohereResponse(cohereKey, client, prompt)
             if err != nil {
-                answer = fmt.Sprintf("Errore: Cohere non ha risposto. (in %s)", language)
+                answer = fmt.Sprintf("Error: Cohere did not respond. (in %s)", language)
             }
             responses <- aiResponse{name: "Cohere", content: answer}
+        }()
+
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            var answer string
+            if newsAPIKey == "" {
+                answer = fmt.Sprintf("Error: NEWS_API_KEY is not set. (in %s)", language)
+            } else {
+                var err error
+                answer, err = getNewsContext(newsAPIKey, client, req.Message, language)
+                if err != nil {
+                    answer = fmt.Sprintf("Error: NewsAPI did not respond: %v. (in %s)", err, language)
+                }
+            }
+            responses <- aiResponse{name: "NewsAPI", content: answer}
         }()
 
         go func() {
@@ -1222,11 +1579,14 @@ func main() {
         responseEmbeddings := make(map[string][]float64)
 
         for response := range responses {
+            fmt.Printf("Response from %s: %s\n", response.name, response.content)
             wholeResponse += fmt.Sprintf("%s:\n%s\n\n", response.name, response.content)
-            if !strings.HasPrefix(response.content, "Errore:") {
+            if !strings.HasPrefix(response.content, "Error:") || response.name == "NewsAPI" {
                 validResponses = append(validResponses, response.content)
                 embedding, err := getCohereEmbedding(cohereKey, client, response.content)
-                if err == nil {
+                if err != nil {
+                    fmt.Printf("Error calculating embedding for %s: %v\n", response.name, err)
+                } else {
                     responseEmbeddings[response.name] = embedding
                 }
             }
@@ -1236,7 +1596,7 @@ func main() {
         contributions := ""
 
         if len(validResponses) == 0 {
-            selectedAnswer = fmt.Sprintf("Nessuna risposta valida ricevuta. (in %s)", language)
+            selectedAnswer = fmt.Sprintf("No valid response received. (in %s)", language)
         } else {
             embeddings := make([][]float64, 0)
             for _, response := range validResponses {
