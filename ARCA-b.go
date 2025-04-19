@@ -3,6 +3,7 @@ package main
 import (
     "bytes"
     "context"
+    "encoding/base64"
     "encoding/json"
     "fmt"
     "io"
@@ -466,12 +467,10 @@ func getCohereEmbedding(cohereKey string, client *http.Client, text string) ([]f
     if embedResult.Error.Message != "" {
         return nil, fmt.Errorf("error from Cohere Embed API: %s", embedResult.Error.Message)
     }
-    if len(embedResult.Embeddings) == 0 || len(embedResult.Embeddings[0]) == 0 {
-        return nil, fmt.Errorf("no valid embedding from Cohere")
+if len(embedResult.Embeddings) == 0 || len(embedResult.Embeddings[0]) == 0 {
     }
     return embedResult.Embeddings[0], nil
 }
-
 func cosineSimilarity(vec1, vec2 []float64) float64 {
     if len(vec1) != len(vec2) {
         return 0.0
@@ -585,17 +584,21 @@ func main() {
             return
         }
 
+        // Log the size of the audio data for debugging
+        fmt.Printf("Received audio file, size: %d bytes\n", len(audioData))
+
         // Use OpenAI Whisper to transcribe the audio
-        ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+        ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second) // Increased timeout for mobile
         defer cancel()
 
         resp, err := openAIClient.CreateTranscription(ctx, openai.AudioRequest{
-            Model:    "whisper-1", // Updated model name
-            FilePath: "audio.webm",
+            Model:    "whisper-1",
+            FilePath: "audio.mp4", // Changed to audio.mp4 for iOS compatibility
             Reader:   bytes.NewReader(audioData),
             Format:   openai.AudioResponseFormatJSON,
         })
         if err != nil {
+            fmt.Printf("Error transcribing audio: %v\n", err)
             http.Error(w, "Error transcribing audio: "+err.Error(), http.StatusInternalServerError)
             return
         }
@@ -606,7 +609,8 @@ func main() {
             "text": resp.Text,
         })
     })
-// Text-to-Speech Handler
+
+    // Text-to-Speech Handler
 http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -623,7 +627,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
     }
 
     // Use OpenAI TTS to convert text to speech
-    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second) // Timeout aumentato
     defer cancel()
 
     voice := "alloy"
@@ -634,9 +638,10 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
     audioResp, err := openAIClient.CreateSpeech(ctx, openai.CreateSpeechRequest{
         Model: "tts-1",
         Input: req.Text,
-        Voice: openai.SpeechVoice(voice), // Converti esplicitamente la stringa in SpeechVoice
+        Voice: openai.SpeechVoice(voice),
     })
     if err != nil {
+        fmt.Println("Error generating speech:", err)
         http.Error(w, "Error generating speech: "+err.Error(), http.StatusInternalServerError)
         return
     }
@@ -645,58 +650,123 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
     // Read the audio data
     audioData, err := io.ReadAll(audioResp)
     if err != nil {
+        fmt.Println("Error reading audio data:", err)
         http.Error(w, "Error reading audio data: "+err.Error(), http.StatusInternalServerError)
         return
     }
 
     // Send the audio data back to the client
-    w.Header().Set("Content-Type", "audio/mpeg")
+    w.Header().Set("Content-Type", "audio/mp4")
     w.Write(audioData)
 })
-
     // File Upload Handler
     http.HandleFunc("/upload-file", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
-            http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+            http.Error(w, `{"error": "Method not allowed"}`, http.StatusMethodNotAllowed)
             return
         }
+
+        fmt.Println("Received file upload request")
 
         // Parse the multipart form to get the file
         err := r.ParseMultipartForm(10 << 20) // 10 MB limit
         if err != nil {
-            http.Error(w, "Error parsing multipart form: "+err.Error(), http.StatusBadRequest)
+            fmt.Println("Error parsing multipart form:", err)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]string{"error": "Error parsing multipart form: " + err.Error()})
             return
         }
 
-        file, _, err := r.FormFile("file")
+        file, header, err := r.FormFile("file")
         if err != nil {
-            http.Error(w, "Error retrieving file: "+err.Error(), http.StatusBadRequest)
+            fmt.Println("Error retrieving file:", err)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]string{"error": "Error retrieving file: " + err.Error()})
             return
         }
         defer file.Close()
+        fmt.Printf("File received: %s, size: %d bytes\n", header.Filename, header.Size)
 
         // Read the file content
         fileContent, err := io.ReadAll(file)
         if err != nil {
-            http.Error(w, "Error reading file: "+err.Error(), http.StatusInternalServerError)
+            fmt.Println("Error reading file:", err)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]string{"error": "Error reading file: " + err.Error()})
             return
         }
 
-        // Convert the file content to string (assuming it's text)
-        text := string(fileContent)
+        var text string
+        // Controlla il tipo di file in base all'estensione
+        if strings.HasSuffix(strings.ToLower(header.Filename), ".txt") {
+            // Se è un file .txt, leggi direttamente il contenuto
+            text = string(fileContent)
+            fmt.Println("Extracted text from .txt:", text)
+        } else if strings.HasSuffix(strings.ToLower(header.Filename), ".png") || strings.HasSuffix(strings.ToLower(header.Filename), ".jpg") || strings.HasSuffix(strings.ToLower(header.Filename), ".jpeg") {
+            // Se è un'immagine, usa OpenAI Vision per estrarre il testo
+            base64Image := base64.StdEncoding.EncodeToString(fileContent)
+            imageURL := "data:image/jpeg;base64," + base64Image
 
-        // Send the extracted text back to the client
+            ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+            defer cancel()
+
+            // Prompt più esplicito per estrarre il testo
+            prompt := "Extract all visible text from the provided image. If no text is present, return 'No text found in the image.'"
+            resp, err := openAIClient.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
+                Model: "gpt-4o",
+                Messages: []openai.ChatCompletionMessage{
+                    {
+                        Role: openai.ChatMessageRoleUser,
+                        MultiContent: []openai.ChatMessagePart{
+                            {
+                                Type: openai.ChatMessagePartTypeText,
+                                Text: prompt,
+                            },
+                            {
+                                Type: openai.ChatMessagePartTypeImageURL,
+                                ImageURL: &openai.ChatMessageImageURL{
+                                    URL: imageURL,
+                                },
+                            },
+                        },
+                    },
+                },
+                MaxTokens: 500,
+            })
+            if err != nil {
+                fmt.Println("Error extracting text with OpenAI Vision:", err)
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(map[string]string{"error": "Error extracting text from image: " + err.Error()})
+                return
+            }
+
+            if len(resp.Choices) == 0 || resp.Choices[0].Message.Content == "" {
+                fmt.Println("No text extracted from image")
+                w.Header().Set("Content-Type", "application/json")
+                json.NewEncoder(w).Encode(map[string]string{"error": "No text extracted from image"})
+                return
+            }
+            text = resp.Choices[0].Message.Content
+            fmt.Println("Extracted text from image:", text)
+        } else {
+            fmt.Println("Unsupported file type:", header.Filename)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(map[string]string{"error": "Unsupported file type. Please upload a .txt, .png, or .jpeg file."})
+            return
+        }
+
+        // Invia il testo estratto al client
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(map[string]string{
             "text": text,
         })
-    })
+    }) // Fine handler /upload-file
 
     http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /health")
         w.WriteHeader(http.StatusOK)
         fmt.Fprint(w, "ARCA-b Chat AI is running on arcab-global-ai.org")
-    })
+    }) // Fine handler /health
 
     http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         fmt.Println("Received request on /")
@@ -710,7 +780,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             http.SetCookie(w, sessionID)
         }
         w.Header().Set("Content-Type", "text/html; charset=utf-8")
-        fmt.Fprintf(w, `<!DOCTYPE html>
+        fmt.Fprint(w, `<!DOCTYPE html>
 <html>
 <head>
     <title>ARCA-b Chat AI</title>
@@ -965,7 +1035,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                 <input id="input" type="text" placeholder="Write your question...">
                 <button onclick="sendMessage()">Send</button>
                 <button onclick="startRecording()" id="speak-button" class="speak-button">Speak</button>
-                <input type="file" id="file-input" accept=".txt" style="display: none;" onchange="uploadFile()">
+                <input type="file" id="file-input" accept=".txt,image/*" style="display: none;" onchange="uploadFile()">
                 <button onclick="document.getElementById('file-input').click()" class="upload-button">Upload File</button>
                 <button onclick="clearChat()">Clear Chat</button>
             </div>
@@ -976,8 +1046,9 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
     </p>
     <script>
         let conversationHistory = [];
-        let mediaRecorder;
+        let mediaRecorder = null;
         let audioChunks = [];
+        let audioStream = null;
 
         const chat = document.getElementById("chat");
         const input = document.getElementById("input");
@@ -1018,7 +1089,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                 const listenButton = document.createElement("button");
                 listenButton.textContent = "Listen";
                 listenButton.className = "listen-button";
-                listenButton.onclick = function() { textToSpeech(text, languageSelect.value); };
+                listenButton.onclick = function() { textToSpeech(text, languageSelect.value, this); };
                 div.appendChild(listenButton);
             }
 
@@ -1070,9 +1141,15 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
         function copyConversation(index) {
             const conv = conversationHistory[index];
             const shareText = "User: " + conv.user + "\nARCA-b: " + conv.response + "\n\nTry ARCA-b Chat AI at: https://arcab-global-ai.org";
-            navigator.clipboard.writeText(shareText).then(function() {
-                alert("Conversation text copied to clipboard!");
-            });
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(shareText).then(function() {
+                    alert("Conversation text copied to clipboard!");
+                }).catch(function(err) {
+                    alert("Error copying text: " + err.message);
+                });
+            } else {
+                prompt("Copy this text manually:", shareText);
+            }
         }
 
         function shareConversationLink(index) {
@@ -1088,14 +1165,27 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                     conversationIndex: index
                 }),
                 credentials: "include"
-            }).then(response => response.json()).then(data => {
+            }).then(response => {
+                if (!response.ok) {
+                    throw new Error("Network response was not ok: " + response.statusText);
+                }
+                return response.json();
+            }).then(data => {
                 const conversationId = data.conversationId;
                 if (!conversationId) throw new Error("conversationId not found");
                 const shareLink = "https://arcab-global-ai.org/conversation/" + conversationId;
-                navigator.clipboard.writeText(shareLink).then(function() {
-                    alert("Conversation link copied to clipboard: " + shareLink);
-                });
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(shareLink).then(function() {
+                        alert("Conversation link copied to clipboard: " + shareLink);
+                    }).catch(function(err) {
+                        alert("Error copying link: " + err.message);
+                        prompt("Copy this link manually:", shareLink);
+                    });
+                } else {
+                    prompt("Copy this link manually:", shareLink);
+                }
             }).catch(err => {
+                console.error("Error generating share link:", err);
                 alert("Error generating share link: " + err.message);
             });
         }
@@ -1116,7 +1206,12 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
 
         async function sendMessage(messageText) {
             const question = messageText || input.value.trim();
-            if (!question) return;
+            if (!question) {
+                console.log("No question to send");
+                return;
+            }
+
+            console.log("Sending message:", question);
 
             addMessage(question, true);
             input.value = "";
@@ -1146,6 +1241,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             } catch (error) {
                 removeProcessingMessage();
                 addMessage("Error: I couldn't get a response. " + error.message, false);
+                console.error("Error sending message:", error);
             }
         }
 
@@ -1159,32 +1255,49 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             });
         }
 
-        // Speech-to-Text Functionality
         async function startRecording() {
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 alert("Your browser does not support audio recording.");
                 return;
             }
 
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            if (mediaRecorder) {
+                mediaRecorder = null;
+            }
+            audioChunks = [];
+
             speakButton.classList.add("recording");
             speakButton.textContent = "Recording... (Click to Stop)";
 
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                mediaRecorder = new MediaRecorder(stream);
-                audioChunks = [];
+                audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(audioStream, { mimeType: "audio/mp4" });
 
                 mediaRecorder.ondataavailable = function(e) {
-                    audioChunks.push(e.data);
+                    if (e.data.size > 0) {
+                        audioChunks.push(e.data);
+                    }
                 };
 
                 mediaRecorder.onstop = async function() {
                     speakButton.classList.remove("recording");
                     speakButton.textContent = "Speak";
+                    speakButton.onclick = startRecording;
 
-                    const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
+                    console.log("Recording stopped, audio chunks:", audioChunks.length);
+
+                    if (audioChunks.length === 0) {
+                        alert("Error: No audio data recorded.");
+                        return;
+                    }
+
+                    const audioBlob = new Blob(audioChunks, { type: "audio/mp4" });
                     const formData = new FormData();
-                    formData.append("audio", audioBlob, "recording.webm");
+                    formData.append("audio", audioBlob, "recording.mp4");
 
                     try {
                         const response = await fetch("/speech-to-text", {
@@ -1199,10 +1312,21 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                             alert("Error: Could not transcribe audio.");
                         }
                     } catch (error) {
+                        console.error("Error transcribing audio:", error);
                         alert("Error transcribing audio: " + error.message);
+                    } finally {
+                        if (audioStream) {
+                            audioStream.getTracks().forEach(track => track.stop());
+                            audioStream = null;
+                        }
+                        audioChunks = [];
+                        mediaRecorder = null;
                     }
+                };
 
-                    stream.getTracks().forEach(track => track.stop());
+                mediaRecorder.onerror = function(event) {
+                    console.error("MediaRecorder error:", event);
+                    alert("Error recording audio: " + event);
                 };
 
                 mediaRecorder.start();
@@ -1210,6 +1334,8 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             } catch (error) {
                 speakButton.classList.remove("recording");
                 speakButton.textContent = "Speak";
+                speakButton.onclick = startRecording;
+                console.error("Error accessing microphone:", error);
                 alert("Error accessing microphone: " + error.message);
             }
         }
@@ -1220,28 +1346,67 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             }
         }
 
-        // Text-to-Speech Functionality
-        async function textToSpeech(text, language) {
+        async function textToSpeech(text, language, button) {
             try {
+                button.disabled = true;
+                button.textContent = "Playing...";
+
                 const response = await fetch("/text-to-speech", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ text: text, language: language }),
                 });
+                if (!response.ok) {
+                    throw new Error("HTTP error, status: " + response.status);
+                }
                 const audioBlob = await response.blob();
                 const audioUrl = URL.createObjectURL(audioBlob);
                 const audio = new Audio(audioUrl);
-                audio.play();
+
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+                if (isIOS) {
+                    const playButton = document.createElement("button");
+                    playButton.textContent = "Play Audio";
+                    playButton.className = "listen-button";
+                    playButton.onclick = function() {
+                        audio.play().catch(err => {
+                            console.error("Error playing audio on iOS:", err);
+                            alert("Error playing audio: " + err.message);
+                        });
+                        playButton.remove();
+                        button.disabled = false;
+                        button.textContent = "Listen";
+                    };
+                    button.parentNode.insertBefore(playButton, button.nextSibling);
+                } else {
+                    audio.play().catch(err => {
+                        console.error("Error playing audio:", err);
+                        alert("Error playing audio: " + err.message);
+                    });
+                    audio.onended = () => {
+                        button.disabled = false;
+                        button.textContent = "Listen";
+                        URL.revokeObjectURL(audioUrl);
+                    };
+                }
             } catch (error) {
+                console.error("Error fetching audio:", error);
                 alert("Error playing audio: " + error.message);
+                button.disabled = false;
+                button.textContent = "Listen";
             }
         }
 
-        // File Upload Functionality
         async function uploadFile() {
             const fileInput = document.getElementById("file-input");
             const file = fileInput.files[0];
-            if (!file) return;
+            if (!file) {
+                console.log("No file selected");
+                alert("Please select a file to upload.");
+                return;
+            }
+
+            console.log("Uploading file:", file.name, "size:", file.size);
 
             const formData = new FormData();
             formData.append("file", file);
@@ -1251,18 +1416,30 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                     method: "POST",
                     body: formData,
                 });
+                console.log("Response status:", response.status);
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || "Server error");
+                }
                 const result = await response.json();
+                console.log("Response from server:", result);
                 if (result.text) {
+                    console.log("Text extracted:", result.text);
                     input.value = result.text;
                     sendMessage(result.text);
+                } else if (result.error) {
+                    console.log("Server error:", result.error);
+                    alert("Error: " + result.error);
                 } else {
+                    console.log("No text extracted from file");
                     alert("Error: Could not extract text from file.");
                 }
             } catch (error) {
+                console.error("Error uploading file:", error);
                 alert("Error uploading file: " + error.message);
+            } finally {
+                fileInput.value = "";
             }
-
-            fileInput.value = ""; // Reset the file input
         }
 
         input.addEventListener("keypress", function(e) {
@@ -1270,12 +1447,11 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
         });
     </script>
 </body>
-</html>
-`)
-    })
+</html>`)
+    }) // Fine handler /
 
     http.HandleFunc("/donate", func(w http.ResponseWriter, r *http.Request) {
-        fmt.Fprintf(w, `<!DOCTYPE html>
+        fmt.Fprint(w, `<!DOCTYPE html>
 <html>
 <head>
     <title>Donations - ARCA-b Chat AI</title>
@@ -1298,7 +1474,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
     <a href="/"><button>Back to Chat</button></a>
 </body>
 </html>`)
-    })
+    }) // Fine handler /donate
 
     http.HandleFunc("/clear", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
@@ -1314,7 +1490,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
         delete(sessions, sessionID.Value)
         mutex.Unlock()
         w.WriteHeader(http.StatusOK)
-    })
+    }) // Fine handler /clear
 
     http.HandleFunc("/conversation/", func(w http.ResponseWriter, r *http.Request) {
         id := strings.TrimPrefix(r.URL.Path, "/conversation/")
@@ -1358,7 +1534,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
 </body>
 </html>
 `, strings.ReplaceAll(conversation.Response, "\n", "<br>"), strings.ReplaceAll(conversation.Contributions, "\n", "<br>"))
-    })
+    }) // Fine handler /conversation/
 
     http.HandleFunc("/chat", func(w http.ResponseWriter, r *http.Request) {
         if r.Method != http.MethodPost {
@@ -1464,7 +1640,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                     Messages: messagesWithLang,
                 })
                 if err != nil {
-                    answer = fmt.Sprintf("Error: OpenAI did not respond. (in %s)", language)
+                    answer = fmt.Sprintf("Error: OpenAI did not respond: %v. (in %s)", err, language)
                 } else {
                     answer = resp.Choices[0].Message.Content
                 }
@@ -1477,7 +1653,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             defer wg.Done()
             answer, err := getDeepSeekResponse(client, deepSeekKey, session.History, language)
             if err != nil {
-                answer = fmt.Sprintf("Error: DeepSeek did not respond. (in %s)", language)
+                answer = fmt.Sprintf("Error: DeepSeek did not respond: %v. (in %s)", err, language)
             }
             responses <- aiResponse{name: "DeepSeek", content: answer}
         }()
@@ -1516,10 +1692,10 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
                             answer = fmt.Sprintf("Error: Gemini did not provide a valid response. (in %s)", language)
                         }
                     } else {
-                        answer = fmt.Sprintf("Error: Gemini did not respond. (in %s)", language)
+                        answer = fmt.Sprintf("Error: Gemini did not respond: %v. (in %s)", err, language)
                     }
                 } else {
-                    answer = fmt.Sprintf("Error: Gemini did not respond. (in %s)", language)
+                    answer = fmt.Sprintf("Error: Gemini did not respond: %v. (in %s)", err, language)
                 }
             }
             responses <- aiResponse{name: "Gemini", content: answer}
@@ -1534,7 +1710,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             }
             answer, err := getMistralResponse(mistralKey, client, prompt)
             if err != nil {
-                answer = fmt.Sprintf("Error: Mistral did not respond. (in %s)", language)
+                answer = fmt.Sprintf("Error: Mistral did not respond: %v. (in %s)", err, language)
             }
             responses <- aiResponse{name: "Mistral", content: answer}
         }()
@@ -1548,7 +1724,7 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
             }
             answer, err := getCohereResponse(cohereKey, client, prompt)
             if err != nil {
-                answer = fmt.Sprintf("Error: Cohere did not respond. (in %s)", language)
+                answer = fmt.Sprintf("Error: Cohere did not respond: %v. (in %s)", err, language)
             }
             responses <- aiResponse{name: "Cohere", content: answer}
         }()
@@ -1577,87 +1753,93 @@ http.HandleFunc("/text-to-speech", func(w http.ResponseWriter, r *http.Request) 
         wholeResponse := ""
         validResponses := make([]string, 0)
         responseEmbeddings := make(map[string][]float64)
+        contributionScores := make(map[string]float64)
+        rawResponses := ""
 
-        for response := range responses {
-            fmt.Printf("Response from %s: %s\n", response.name, response.content)
-            wholeResponse += fmt.Sprintf("%s:\n%s\n\n", response.name, response.content)
-            if !strings.HasPrefix(response.content, "Error:") || response.name == "NewsAPI" {
-                validResponses = append(validResponses, response.content)
-                embedding, err := getCohereEmbedding(cohereKey, client, response.content)
-                if err != nil {
-                    fmt.Printf("Error calculating embedding for %s: %v\n", response.name, err)
-                } else {
-                    responseEmbeddings[response.name] = embedding
+        for resp := range responses {
+            if !strings.HasPrefix(resp.content, "Error:") {
+                validResponses = append(validResponses, resp.content)
+                if resp.name != "NewsAPI" {
+                    embedding, err := getCohereEmbedding(cohereKey, client, resp.content)
+                    if err == nil {
+                        responseEmbeddings[resp.name] = embedding
+                    }
                 }
             }
+            rawResponses += fmt.Sprintf("%s: %s\n", resp.name, resp.content)
         }
 
-        var selectedAnswer string
-        contributions := ""
-
         if len(validResponses) == 0 {
-            selectedAnswer = fmt.Sprintf("No valid response received. (in %s)", language)
-        } else {
-            embeddings := make([][]float64, 0)
-            for _, response := range validResponses {
-                embedding, err := getCohereEmbedding(cohereKey, client, response)
-                if err == nil {
-                    embeddings = append(embeddings, embedding)
-                }
+            response := ChatResponse{
+                Response:     fmt.Sprintf("I'm sorry, I couldn't get any valid responses from the AI services. (in %s)", language),
+                RawResponses: rawResponses,
             }
-            if len(embeddings) == 0 {
-                selectedAnswer = validResponses[0]
-            } else {
-                maxSimilarity := 0.0
-                bestPair := [2]int{0, 0}
-                for i := 0; i < len(embeddings); i++ {
-                    for j := i + 1; j < len(embeddings); j++ {
-                        similarity := cosineSimilarity(embeddings[i], embeddings[j])
-                        if similarity > maxSimilarity {
-                            maxSimilarity = similarity
-                            bestPair = [2]int{i, j}
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(response)
+            return
+        }
+
+        referenceEmbedding, err := getCohereEmbedding(cohereKey, client, validResponses[0])
+        if err != nil {
+            wholeResponse = validResponses[0]
+            // Assegna un peso uniforme se gli embedding non sono disponibili
+            for name := range responseEmbeddings {
+                contributionScores[name] = 1.0 / float64(len(responseEmbeddings))
+            }
+        } else {
+            bestResponse := validResponses[0]
+            bestScore := 0.0
+            totalScore := 0.0
+            scores := make(map[string]float64)
+
+            for name, embedding := range responseEmbeddings {
+                score := cosineSimilarity(referenceEmbedding, embedding)
+                scores[name] = score
+                totalScore += score
+                if score > bestScore {
+                    bestScore = score
+                    bestResponse = validResponses[0] // Default alla prima risposta valida
+                    // Trova la risposta corrispondente all'embedding
+                    for _, content := range validResponses {
+                        embeddingCheck, err := getCohereEmbedding(cohereKey, client, content)
+                        if err == nil && cosineSimilarity(referenceEmbedding, embeddingCheck) == score {
+                            bestResponse = content
+                            break
                         }
                     }
                 }
-                if len(validResponses) == 1 {
-                    selectedAnswer = validResponses[0]
+            }
+
+            // Calcola le percentuali di contributo
+            for name, score := range scores {
+                if totalScore > 0 {
+                    contributionScores[name] = (score / totalScore) * 100
                 } else {
-                    selectedAnswer = fmt.Sprintf("%s\n%s", validResponses[bestPair[0]], validResponses[bestPair[1]])
-                }
-                totalSimilarity := 0.0
-                contributionMap := make(map[string]float64)
-                for name, embedding := range responseEmbeddings {
-                    similarity := 0.0
-                    for _, otherEmbedding := range embeddings {
-                        similarity += cosineSimilarity(embedding, otherEmbedding)
-                    }
-                    contributionMap[name] = similarity
-                    totalSimilarity += similarity
-                }
-                for name, similarity := range contributionMap {
-                    percentage := (similarity / totalSimilarity) * 100
-                    contributions += fmt.Sprintf("%s: %.0f%%\n", name, percentage)
+                    contributionScores[name] = 0
                 }
             }
+
+            wholeResponse = bestResponse
         }
+
+        // Costruisci la stringa delle contribuzioni con le percentuali
+        var contribStrings []string
+        for name, percentage := range contributionScores {
+            contribStrings = append(contribStrings, fmt.Sprintf("%s: %.2f%%", name, percentage))
+        }
+        contributionsStr := strings.Join(contribStrings, "\n")
 
         response := ChatResponse{
-            Response:      selectedAnswer,
-            RawResponses:  wholeResponse,
-            Contributions: contributions,
+            Response:      wholeResponse,
+            RawResponses:  rawResponses,
+            Contributions: contributionsStr,
         }
-
-        mutex.Lock()
-        session.History = append(session.History, openai.ChatCompletionMessage{
-            Role:    openai.ChatMessageRoleAssistant,
-            Content: selectedAnswer,
-        })
-        mutex.Unlock()
-
         w.Header().Set("Content-Type", "application/json")
         json.NewEncoder(w).Encode(response)
-    })
+    }) // Fine handler /chat
 
-    fmt.Printf("Starting server on port %s...\n", port)
-    http.ListenAndServe(":"+port, nil)
-}
+    fmt.Printf("Starting ARCA-b server on port %s...\n", port)
+    if err := http.ListenAndServe(":"+port, nil); err != nil {
+        fmt.Printf("Server failed to start: %v\n", err)
+    }
+} // Fine main
